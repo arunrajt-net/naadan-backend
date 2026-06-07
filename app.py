@@ -73,7 +73,9 @@ def create_app():
             "UPDATE \"order\" SET status = 'Waiting Farmer Confirmation' WHERE status = 'WaitingFarmerConfirmation'",
             "UPDATE \"order\" SET status = 'Accepted' WHERE status = 'Confirmed' OR status = 'Accepted' OR status = 'ACCEPTED'",
             "UPDATE \"order\" SET status = 'Out For Delivery' WHERE status = 'Shipped'",
-            "UPDATE \"order\" SET status = 'Waiting Customer Confirmation' WHERE status = 'Delivered'"
+            "UPDATE \"order\" SET status = 'Waiting Customer Confirmation' WHERE status = 'Delivered'",
+            'ALTER TABLE "user" ADD COLUMN location_privacy VARCHAR(20) DEFAULT "public"',
+            'ALTER TABLE "user" ADD COLUMN pickup_instructions TEXT'
         ]
         
         for mig in migrations:

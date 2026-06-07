@@ -406,6 +406,7 @@ def get_order_detail(order_id, current_user):
         "buyer_address": order.shipping_address,
         "buyer_lat": buyer_lat,
         "buyer_lng": buyer_lng,
+        "pickup_instructions": farmer.pickup_instructions if (farmer and order.delivery_type == "Pickup") else "",
         "delivered_at": order.delivered_at.isoformat() if order.delivered_at else None,
         "completed_at": order.completed_at.isoformat() if order.completed_at else None,
         "completed_by": order.completed_by,

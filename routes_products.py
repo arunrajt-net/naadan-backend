@@ -94,6 +94,48 @@ def get_farmer_products(current_user):
         })
     return jsonify(res), 200
 
+def obfuscate_coords(lat, lng, farmer_id):
+    if lat is None or lng is None:
+        return lat, lng
+    import math
+    angle = (farmer_id * 17) % 360
+    shift_dist = 0.0065 + ((farmer_id * 31) % 100) * 0.000014
+    rad = math.radians(angle)
+    lat_offset = shift_dist * math.cos(rad)
+    lng_offset = shift_dist * math.sin(rad)
+    return round(lat + lat_offset, 6), round(lng + lng_offset, 6)
+
+def get_area_info(lat, lng):
+    if lat is None or lng is None:
+        return "Unknown", "Unknown"
+    # Major towns in Kerala
+    towns = [
+        {"name": "Kochi", "district": "Ernakulam", "lat": 9.9312, "lng": 76.2673},
+        {"name": "Kottayam", "district": "Kottayam", "lat": 9.5916, "lng": 76.5222},
+        {"name": "Alappuzha", "district": "Alappuzha", "lat": 9.4981, "lng": 76.3388},
+        {"name": "Thrissur", "district": "Thrissur", "lat": 10.5276, "lng": 76.2144},
+        {"name": "Trivandrum", "district": "Thiruvananthapuram", "lat": 8.5241, "lng": 76.9366},
+        {"name": "Kozhikode", "district": "Kozhikode", "lat": 11.2588, "lng": 75.7804},
+        {"name": "Palakkad", "district": "Palakkad", "lat": 10.7867, "lng": 76.6547},
+        {"name": "Kannur", "district": "Kannur", "lat": 11.8745, "lng": 75.3704},
+        {"name": "Kollam", "district": "Kollam", "lat": 8.8932, "lng": 76.6141},
+        {"name": "Muvattupuzha", "district": "Ernakulam", "lat": 9.9894, "lng": 76.5790},
+        {"name": "Thodupuzha", "district": "Idukki", "lat": 9.8959, "lng": 76.7184},
+        {"name": "Kanjirappally", "district": "Kottayam", "lat": 9.5564, "lng": 76.7868},
+        {"name": "Cherthala", "district": "Alappuzha", "lat": 9.6845, "lng": 76.3268},
+        {"name": "Angamaly", "district": "Ernakulam", "lat": 10.1986, "lng": 76.3864},
+    ]
+    min_dist = float('inf')
+    nearest_town = "Kerala"
+    nearest_district = "Kerala"
+    for t in towns:
+        d = calculate_distance(lat, lng, t["lat"], t["lng"])
+        if d < min_dist:
+            min_dist = d
+            nearest_town = t["name"]
+            nearest_district = t["district"]
+    return nearest_town, nearest_district
+
 @products_bp.route('/nearby', methods=['GET'])
 def get_nearby_products():
     from routes_orders import expire_abandoned_reservations
@@ -130,6 +172,14 @@ def get_nearby_products():
                 farmer.compute_trust_score()
                 db.session.commit()
 
+                # Obfuscate coordinates only for public search if privacy is approximate
+                p_lat, p_lng = p.lat, p.lng
+                if farmer.location_privacy == "approximate":
+                    p_lat, p_lng = obfuscate_coords(p.lat, p.lng, farmer.id)
+
+                # Get town and district based on exact coordinates
+                town, district = get_area_info(p.lat, p.lng)
+
                 results.append({
                     "id": p.id,
                     "farmer_id": p.farmer_id,
@@ -140,8 +190,13 @@ def get_nearby_products():
                     "image_url": p.image_url,
                     "distance_km": round(dist, 2),
                     "farmer_name": farmer.name,
-                    "farmer_phone": farmer.phone,
-                    "farmer_upi_id": farmer.upi_id or (farmer.phone + "@upi" if farmer.phone else ""),
+                    "farmer_phone": "",
+                    "farmer_upi_id": "",
+                    "lat": p_lat,
+                    "lng": p_lng,
+                    "farmer_town": town,
+                    "farmer_district": district,
+                    "location_privacy": farmer.location_privacy,
                     "farmer_rating": avg_rating,
                     "farmer_rating_count": len(ratings),
                     "farmer_is_verified": bool(farmer.is_verified),

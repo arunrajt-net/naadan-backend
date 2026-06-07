@@ -25,6 +25,8 @@ class User(db.Model):
     delivery_price_per_km = db.Column(db.Float, default=0.0, nullable=False, server_default='0.0')
     upi_id = db.Column(db.String(100), nullable=True)
     farm_name = db.Column(db.String(100), nullable=True)
+    location_privacy = db.Column(db.String(20), default="public", nullable=False, server_default="public")
+    pickup_instructions = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     # ---- OLD FIELDS (kept for backward compat) ----
@@ -113,8 +115,8 @@ class User(db.Model):
             "id": self.id,
             "name": self.name,
             "farm_name": self.farm_name,
-            "phone": self.phone,
-            "upi_id": self.upi_id,
+            "phone": None,
+            "upi_id": None,
             "lat": self.lat,
             "lng": self.lng,
             "role": self.role,

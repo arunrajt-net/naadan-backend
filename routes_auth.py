@@ -132,6 +132,10 @@ def sync_user():
                 user.upi_id = data.get('upi_id').strip()
             if 'farm_name' in data and data.get('farm_name'):
                 user.farm_name = data.get('farm_name').strip()
+            if 'location_privacy' in data:
+                user.location_privacy = data.get('location_privacy')
+            if 'pickup_instructions' in data:
+                user.pickup_instructions = data.get('pickup_instructions')
             db.session.commit()
             
             log_audit_event(user.id, "User Login Sync", f"Synced profile details for user {user.id}")
@@ -157,7 +161,9 @@ def sync_user():
                     "panchayat_id": user.panchayat_id,
                     "is_buyer": bool(user.is_buyer),
                     "is_farmer": bool(user.is_farmer),
-                    "is_admin": bool(user.is_admin)
+                    "is_admin": bool(user.is_admin),
+                    "location_privacy": user.location_privacy,
+                    "pickup_instructions": user.pickup_instructions
                 }
             }), 200
         else:
@@ -198,7 +204,9 @@ def sync_user():
                 verification_status='NONE',
                 is_buyer=is_b,
                 is_farmer=is_f,
-                is_admin=is_a
+                is_admin=is_a,
+                location_privacy=data.get('location_privacy', 'public'),
+                pickup_instructions=data.get('pickup_instructions')
             )
             db.session.add(new_user)
             db.session.commit()
@@ -222,7 +230,9 @@ def sync_user():
                     "verification_status": 'NONE',
                     "is_buyer": bool(new_user.is_buyer),
                     "is_farmer": bool(new_user.is_farmer),
-                    "is_admin": bool(new_user.is_admin)
+                    "is_admin": bool(new_user.is_admin),
+                    "location_privacy": new_user.location_privacy,
+                    "pickup_instructions": new_user.pickup_instructions
                 }
             }), 201
 
@@ -294,7 +304,9 @@ def link_accounts():
                 "panchayat_id": user.panchayat_id,
                 "is_buyer": bool(user.is_buyer),
                 "is_farmer": bool(user.is_farmer),
-                "is_admin": bool(user.is_admin)
+                "is_admin": bool(user.is_admin),
+                "location_privacy": user.location_privacy,
+                "pickup_instructions": user.pickup_instructions
             }
         }), 200
     except Exception as e:
