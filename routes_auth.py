@@ -1,9 +1,21 @@
 from flask import Blueprint, request, jsonify
-from models import db, User, Product, AuditEvent
+from models import db, User, Product, LocationAudit, AuditEvent
+from datetime import datetime
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from auth_middleware import decode_jwt_payload_offline, firebase_required
-from datetime import datetime
+import math
+
+def calculate_haversine(lat1, lon1, lat2, lon2):
+    if lat1 is None or lon1 is None or lat2 is None or lon2 is None:
+        return 0.0
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2 +
+         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2)
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
 
 auth_bp = Blueprint('auth_bp', __name__)
 
@@ -95,16 +107,68 @@ def sync_user():
                 if name and name != 'Anonymous' and name != 'User':
                     user.name = name
 
-            if lat is not None and lng is not None:
-                is_default_kochi = (lat == 10.0 and lng == 76.0)
-                user_has_custom = (user.lat is not None and user.lng is not None and user.lat != 10.0 and user.lng != 76.0)
-                if not (is_default_kochi and user_has_custom):
-                    user.lat = lat
-                    user.lng = lng
-                    Product.query.filter_by(farmer_id=user.id).update({
-                        Product.lat: lat,
-                        Product.lng: lng
-                    })
+            if lat is not None or lng is not None:
+                if lat is None or lng is None:
+                    return jsonify({"error": "Latitude and longitude must both be provided."}), 400
+                try:
+                    lat_f = float(lat)
+                    lng_f = float(lng)
+                except (ValueError, TypeError):
+                    return jsonify({"error": "Invalid coordinate formats."}), 400
+                if lat_f == 0.0 or lng_f == 0.0:
+                    return jsonify({"error": "Invalid coordinates [0,0] provided."}), 400
+                if lat_f < -90.0 or lat_f > 90.0 or lng_f < -180.0 or lng_f > 180.0:
+                    return jsonify({"error": "Coordinates are out of global bounds."}), 400
+
+                gps_acc = data.get('gps_accuracy')
+                if gps_acc is not None:
+                    try:
+                        gps_acc_f = float(gps_acc)
+                        if gps_acc_f > 100.0:
+                            return jsonify({"error": "GPS accuracy is too low (must be within 100 meters)."}), 400
+                    except (ValueError, TypeError):
+                        pass
+
+                # Check for active pickup/delivery orders for the farmer
+                if user.is_farmer:
+                    from models import Order
+                    active_order_statuses = ['Accepted', 'Packed', 'Out For Delivery', 'Waiting Customer Confirmation']
+                    active_orders_count = Order.query.filter(
+                        Order.farmer_id == user.id,
+                        Order.status.in_(active_order_statuses)
+                    ).count()
+                    if active_orders_count > 0 and not data.get('confirm_active_orders', False):
+                        return jsonify({
+                            "status": "active_orders_warning",
+                            "msg": "You currently have active orders. Changing farm location may affect customer navigation. Continue?"
+                        }), 200
+
+                # Log location changes to audit log
+                if user.lat != lat_f or user.lng != lng_f:
+                    dist_km = calculate_haversine(user.lat, user.lng, lat_f, lng_f) if (user.lat is not None and user.lng is not None) else 0.0
+                    audit_log = LocationAudit(
+                        user_id=user.id,
+                        old_lat=user.lat,
+                        old_lng=user.lng,
+                        new_lat=lat_f,
+                        new_lng=lng_f,
+                        change_distance_km=dist_km,
+                        change_method=data.get('change_method', 'Manual Map Pin')
+                    )
+                    db.session.add(audit_log)
+                    user.location_last_updated = datetime.utcnow()
+                    if gps_acc is not None:
+                        try:
+                            user.gps_accuracy = float(gps_acc)
+                        except:
+                            pass
+
+                user.lat = lat_f
+                user.lng = lng_f
+                Product.query.filter_by(farmer_id=user.id).update({
+                    Product.lat: lat_f,
+                    Product.lng: lng_f
+                })
             
             # Update phone safely: only overwrite if explicitly passed or if current phone is unset
             if 'phone' in data and data.get('phone'):
@@ -136,6 +200,8 @@ def sync_user():
                 user.location_privacy = data.get('location_privacy')
             if 'pickup_instructions' in data:
                 user.pickup_instructions = data.get('pickup_instructions')
+            if 'pickup_landmark' in data:
+                user.pickup_landmark = data.get('pickup_landmark')
             db.session.commit()
             
             log_audit_event(user.id, "User Login Sync", f"Synced profile details for user {user.id}")
@@ -359,3 +425,24 @@ def enable_role(current_user):
             "is_admin": bool(current_user.is_admin)
         }
     }), 200
+
+
+@auth_bp.route('/location-history', methods=['GET'])
+@firebase_required()
+def get_location_history(current_user):
+    logs = LocationAudit.query.filter_by(user_id=current_user.id).order_by(LocationAudit.timestamp.desc()).limit(10).all()
+    res = []
+    for log in logs:
+        res.append({
+            "id": log.id,
+            "old_lat": log.old_lat,
+            "old_lng": log.old_lng,
+            "new_lat": log.new_lat,
+            "new_lng": log.new_lng,
+            "change_distance_km": round(log.change_distance_km or 0.0, 2),
+            "change_method": log.change_method,
+            "timestamp": log.timestamp.isoformat() if log.timestamp else ""
+        })
+    return jsonify(res), 200
+
+

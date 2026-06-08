@@ -28,6 +28,9 @@ class User(db.Model):
     location_privacy = db.Column(db.String(20), default="public", nullable=False, server_default="public")
     pickup_instructions = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    gps_accuracy = db.Column(db.Float, nullable=True)
+    location_last_updated = db.Column(db.DateTime, nullable=True)
+    pickup_landmark = db.Column(db.String(150), nullable=True)
 
     # ---- OLD FIELDS (kept for backward compat) ----
     is_verified = db.Column(db.Boolean, default=False)
@@ -137,6 +140,8 @@ class User(db.Model):
             "is_buyer": self.is_buyer,
             "is_farmer": self.is_farmer,
             "is_admin": self.is_admin,
+            "gps_accuracy": self.gps_accuracy,
+            "pickup_landmark": self.pickup_landmark,
         }
 
 class Product(db.Model):
@@ -225,6 +230,38 @@ class Order(db.Model):
     completed_by = db.Column(db.String(20), nullable=True)  # 'customer', 'system'
     completion_reason = db.Column(db.String(255), nullable=True)
 
+    # Location Snapshots
+    farmer_lat = db.Column(db.Float, nullable=True)
+    farmer_lng = db.Column(db.Float, nullable=True)
+    buyer_lat = db.Column(db.Float, nullable=True)
+    buyer_lng = db.Column(db.Float, nullable=True)
+    product_lat = db.Column(db.Float, nullable=True)
+    product_lng = db.Column(db.Float, nullable=True)
+
+    # Product Snapshots
+    product_name_snapshot = db.Column(db.String(100), nullable=True)
+    product_price_snapshot = db.Column(db.Float, nullable=True)
+    product_category_snapshot = db.Column(db.String(50), nullable=True)
+    product_quantity_snapshot = db.Column(db.String(50), nullable=True)
+    product_unit_snapshot = db.Column(db.String(20), nullable=True)
+
+    # Farmer & Farm Snapshots
+    farmer_name_snapshot = db.Column(db.String(100), nullable=True)
+    farm_name_snapshot = db.Column(db.String(100), nullable=True)
+
+    # Pickup Snapshot
+    pickup_instructions_snapshot = db.Column(db.Text, nullable=True)
+
+    # Delivery Snapshots
+    delivery_type_snapshot = db.Column(db.String(20), nullable=True)
+    delivery_available_snapshot = db.Column(db.Boolean, nullable=True)
+    delivery_price_per_km_snapshot = db.Column(db.Float, nullable=True)
+
+    # Trust & Verification Snapshots
+    farmer_trust_score_snapshot = db.Column(db.Float, nullable=True)
+    farm_verification_status_snapshot = db.Column(db.String(20), nullable=True)
+    community_verification_status_snapshot = db.Column(db.String(20), nullable=True)
+
 class Notification(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
@@ -263,3 +300,18 @@ class AuditEvent(db.Model):
     details = db.Column(db.Text, nullable=True)
 
     user = db.relationship("User", backref="audit_events")
+
+
+class LocationAudit(db.Model):
+    __tablename__ = 'location_audit'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    old_lat = db.Column(db.Float, nullable=True)
+    old_lng = db.Column(db.Float, nullable=True)
+    new_lat = db.Column(db.Float, nullable=True)
+    new_lng = db.Column(db.Float, nullable=True)
+    change_distance_km = db.Column(db.Float, nullable=True)
+    change_method = db.Column(db.String(50), nullable=True)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    user = db.relationship("User", backref=db.backref("location_audits", lazy=True))

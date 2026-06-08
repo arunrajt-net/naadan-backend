@@ -208,7 +208,37 @@ def create_order(current_user):
             delivery_vehicle=data.get('delivery_vehicle', 'motorcycle'),
             shipping_phone=data.get('shipping_phone'),
             shipping_address=data.get('shipping_address'),
-            idempotency_key=idempotency_key
+            idempotency_key=idempotency_key,
+            
+            # Snapshot coordinates
+            buyer_lat=current_user.lat,
+            buyer_lng=current_user.lng,
+            farmer_lat=farmer.lat,
+            farmer_lng=farmer.lng,
+            product_lat=product.lat if product.lat is not None else farmer.lat,
+            product_lng=product.lng if product.lng is not None else farmer.lng,
+            
+            # Snapshot product info
+            product_name_snapshot=product.name,
+            product_price_snapshot=product.price,
+            product_category_snapshot=product.category,
+            product_quantity_snapshot=product.quantity,
+            product_unit_snapshot=product.unit,
+            
+            # Snapshot farmer & farm info
+            farmer_name_snapshot=farmer.name,
+            farm_name_snapshot=farmer.farm_name if farmer.farm_name else f"{farmer.name}'s Farm",
+            pickup_instructions_snapshot=farmer.pickup_instructions,
+            
+            # Snapshot delivery settings
+            delivery_type_snapshot=product.delivery_type,
+            delivery_available_snapshot=farmer.delivery_available,
+            delivery_price_per_km_snapshot=farmer.delivery_price_per_km,
+            
+            # Snapshot trust and verification status
+            farmer_trust_score_snapshot=farmer.trust_score,
+            farm_verification_status_snapshot=farmer.farm_verification_status,
+            community_verification_status_snapshot=farmer.community_doc_status
         )
         db.session.add(new_order)
         product.reserved_quantity = (product.reserved_quantity or 0.0) + qty
@@ -376,17 +406,27 @@ def get_order_detail(order_id, current_user):
     farmer = User.query.get(order.farmer_id)
     buyer = User.query.get(order.buyer_id)
 
-    farmer_lat = product.lat if product and product.lat else (farmer.lat if farmer and farmer.lat else 10.0)
-    farmer_lng = product.lng if product and product.lng else (farmer.lng if farmer and farmer.lng else 76.0)
-    buyer_lat = buyer.lat if buyer and buyer.lat else 10.0
-    buyer_lng = buyer.lng if buyer and buyer.lng else 76.0
+    # Freeze coordinates using snapshots. Fallback dynamically ONLY if snapshot is NULL.
+    farmer_lat = order.farmer_lat if order.farmer_lat is not None else (product.lat if product and product.lat else (farmer.lat if farmer and farmer.lat else None))
+    farmer_lng = order.farmer_lng if order.farmer_lng is not None else (product.lng if product and product.lng else (farmer.lng if farmer and farmer.lng else None))
+    buyer_lat = order.buyer_lat if order.buyer_lat is not None else (buyer.lat if buyer and buyer.lat else None)
+    buyer_lng = order.buyer_lng if order.buyer_lng is not None else (buyer.lng if buyer and buyer.lng else None)
+
+    # Snapshots formatting
+    product_name = order.product_name_snapshot if order.product_name_snapshot is not None else (product.name if product else "Unknown Product")
+    product_price = order.product_price_snapshot if order.product_price_snapshot is not None else (product.price if product else 0.0)
+    farmer_name = order.farmer_name_snapshot if order.farmer_name_snapshot is not None else (farmer.name if farmer else "Unknown Farmer")
+    farm_name = order.farm_name_snapshot if order.farm_name_snapshot is not None else (farmer.farm_name if farmer else "Unknown Farm")
+    pickup_instructions = order.pickup_instructions_snapshot if order.pickup_instructions_snapshot is not None else (farmer.pickup_instructions if (farmer and order.delivery_type == "Pickup") else "")
+    pickup_landmark = farmer.pickup_landmark if farmer else ""
+    buyer_name = buyer.name if buyer else "Unknown Buyer"
 
     return jsonify({
         "id": order.id,
         "buyer_id": order.buyer_id,
         "farmer_id": order.farmer_id,
-        "product_name": product.name if product else "Unknown Product",
-        "product_price": product.price if product else 0.0,
+        "product_name": product_name,
+        "product_price": product_price,
         "quantity_ordered": order.quantity_ordered,
         "total_price": order.total_price,
         "status": order.status,
@@ -396,21 +436,33 @@ def get_order_detail(order_id, current_user):
         "delivery_type": order.delivery_type,
         "delivery_vehicle": order.delivery_vehicle,
         "created_at": order.created_at.isoformat() if order.created_at else "",
-        "farmer_name": farmer.name if farmer else "Unknown Farmer",
+        "farmer_name": farmer_name,
+        "farm_name": farm_name,
         "farmer_phone": farmer.phone if farmer else "",
         "farmer_upi_id": (farmer.upi_id or (farmer.phone + "@upi" if farmer.phone else "")) if farmer else "",
         "farmer_lat": farmer_lat,
         "farmer_lng": farmer_lng,
-        "buyer_name": buyer.name if buyer else "Unknown Buyer",
+        "buyer_name": buyer_name,
         "buyer_phone": order.shipping_phone or (buyer.phone if buyer else ""),
         "buyer_address": order.shipping_address,
         "buyer_lat": buyer_lat,
         "buyer_lng": buyer_lng,
-        "pickup_instructions": farmer.pickup_instructions if (farmer and order.delivery_type == "Pickup") else "",
+        "pickup_instructions": pickup_instructions,
+        "pickup_landmark": pickup_landmark,
         "delivered_at": order.delivered_at.isoformat() if order.delivered_at else None,
         "completed_at": order.completed_at.isoformat() if order.completed_at else None,
         "completed_by": order.completed_by,
-        "completion_reason": order.completion_reason
+        "completion_reason": order.completion_reason,
+        
+        # Extra snapshot payload for details
+        "product_category": order.product_category_snapshot,
+        "product_quantity": order.product_quantity_snapshot,
+        "product_unit": order.product_unit_snapshot,
+        "delivery_available_snapshot": order.delivery_available_snapshot,
+        "delivery_price_per_km_snapshot": order.delivery_price_per_km_snapshot,
+        "farmer_trust_score_snapshot": order.farmer_trust_score_snapshot,
+        "farm_verification_status_snapshot": order.farm_verification_status_snapshot,
+        "community_verification_status_snapshot": order.community_verification_status_snapshot
     }), 200
 
 @orders_bp.route('/farmer', methods=['GET'])
