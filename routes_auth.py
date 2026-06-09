@@ -229,7 +229,8 @@ def sync_user():
                     "is_farmer": bool(user.is_farmer),
                     "is_admin": bool(user.is_admin),
                     "location_privacy": user.location_privacy,
-                    "pickup_instructions": user.pickup_instructions
+                    "pickup_instructions": user.pickup_instructions,
+                    "pickup_landmark": user.pickup_landmark
                 }
             }), 200
         else:
@@ -298,7 +299,8 @@ def sync_user():
                     "is_farmer": bool(new_user.is_farmer),
                     "is_admin": bool(new_user.is_admin),
                     "location_privacy": new_user.location_privacy,
-                    "pickup_instructions": new_user.pickup_instructions
+                    "pickup_instructions": new_user.pickup_instructions,
+                    "pickup_landmark": new_user.pickup_landmark
                 }
             }), 201
 
@@ -372,7 +374,8 @@ def link_accounts():
                 "is_farmer": bool(user.is_farmer),
                 "is_admin": bool(user.is_admin),
                 "location_privacy": user.location_privacy,
-                "pickup_instructions": user.pickup_instructions
+                "pickup_instructions": user.pickup_instructions,
+                "pickup_landmark": user.pickup_landmark
             }
         }), 200
     except Exception as e:
@@ -422,7 +425,10 @@ def enable_role(current_user):
             "panchayat_id": current_user.panchayat_id,
             "is_farmer": bool(current_user.is_farmer),
             "is_buyer": bool(current_user.is_buyer),
-            "is_admin": bool(current_user.is_admin)
+            "is_admin": bool(current_user.is_admin),
+            "location_privacy": current_user.location_privacy,
+            "pickup_instructions": current_user.pickup_instructions,
+            "pickup_landmark": current_user.pickup_landmark
         }
     }), 200
 
