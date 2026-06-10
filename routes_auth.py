@@ -100,6 +100,15 @@ def sync_user():
                     "email": email,
                     "msg": "An account with this email already exists."
                 }), 200
+                
+        # 3. If not found by UID or email, search by phone to detect duplicates (especially for Phone/Admin Auth users)
+        if not user and phone:
+            clean_phone = phone[-10:] if len(phone) >= 10 else phone
+            user = User.query.filter(User.phone.like(f"%{clean_phone}")).first()
+            if user:
+                print(f"[DEBUG_SYNC] Auto-linking existing account (ID: {user.id}) to new Firebase UID: {uid}")
+                user.firebase_uid = uid
+                db.session.commit()
         
         if user:
             # Safely migrate fields for backward compatibility
@@ -259,8 +268,10 @@ def sync_user():
             if role == 'farmer':
                 is_f = True
             elif role == 'admin':
-                # Block self-registration as admin
-                return jsonify({"msg": "Admin self-registration is restricted."}), 403
+                # Block self-registration as admin UNLESS they are the configured admin
+                if not is_admin_user:
+                    return jsonify({"msg": "Admin self-registration is restricted."}), 403
+                is_a = True
             else:
                 is_b = True
                 
