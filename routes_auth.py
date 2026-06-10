@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify
-from models import db, User, Product, LocationAudit, AuditEvent, PasswordReset
+from models import db, User, Product, LocationAudit, AuditEvent, PasswordReset, SMSAuditLog, RegistrationOTP
 from datetime import datetime, timedelta
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
@@ -261,6 +261,21 @@ def sync_user():
             }), 200
         else:
             # Create new user
+            phone_verified_val = False
+            if phone:
+                clean_phone = phone[-10:] if len(phone) >= 10 else phone
+                if clean_phone.isdigit() and len(clean_phone) == 10:
+                    registration_token = data.get('registration_token')
+                    token_rec = RegistrationOTP.query.filter_by(
+                        phone=clean_phone,
+                        registration_token=registration_token,
+                        is_used=False
+                    ).first()
+                    if not token_rec or token_rec.token_expires_at < datetime.utcnow():
+                        return jsonify({"msg": "Phone number verification is required to create an account."}), 400
+                    token_rec.is_used = True
+                    phone_verified_val = True
+
             is_f = False
             is_b = False
             is_a = False
@@ -301,7 +316,8 @@ def sync_user():
                 is_farmer=is_f,
                 is_admin=is_a,
                 location_privacy=data.get('location_privacy', 'public'),
-                pickup_instructions=data.get('pickup_instructions')
+                pickup_instructions=data.get('pickup_instructions'),
+                phone_verified=phone_verified_val
             )
             db.session.add(new_user)
             db.session.commit()
@@ -575,53 +591,29 @@ import re
 import random
 from werkzeug.security import generate_password_hash, check_password_hash
 
-def send_otp_sms(phone, otp):
+def send_otp_sms(phone, otp, event_type="OTP_RECOVERY", user_id=None):
+    from sms_provider import get_sms_provider
     import os
-    import requests
     
-    # 1. Prepend 91 country code if exactly 10 digits
-    full_phone = phone
-    if len(phone) == 10 and phone.isdigit():
-        full_phone = "91" + phone
+    clean_phone = phone[-10:] if len(phone) >= 10 else phone
+    msg_text = f"Your Naadan verification code is {otp}. It is valid for 5 minutes."
+    
+    # Check if there is specific template configured
+    if event_type == "OTP_RECOVERY":
+        template_id = os.environ.get("MSG91_TEMPLATE_ID", "").strip()
+    elif event_type == "OTP_SIGNUP":
+        template_id = os.environ.get("MSG91_REGISTER_TEMPLATE_ID", "").strip()
+    else:
+        template_id = None
         
-    auth_key = os.environ.get("MSG91_AUTH_KEY", "").strip()
-    template_id = os.environ.get("MSG91_TEMPLATE_ID", "").strip()
-    
-    if not auth_key or not template_id:
-        # Development fallback
-        print(f"\n[DEVELOPMENT SMS FALLBACK] Sending OTP {otp} to {full_phone}\n")
-        log_path = os.path.join(os.path.dirname(__file__), "otp_log.txt")
-        try:
-            with open(log_path, "a") as f:
-                f.write(f"{datetime.utcnow().isoformat()} - Phone: {full_phone} - OTP: {otp}\n")
-        except Exception as e:
-            print("Failed to write to otp_log.txt:", str(e))
-        return True
-
-    # Real MSG91 API Request
-    url = "https://control.msg91.com/api/v5/flow/"
-    headers = {
-        "authkey": auth_key,
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "template_id": template_id,
-        "short_url": "0",
-        "recipients": [
-            {
-                "mobiles": full_phone,
-                "otp": otp
-            }
-        ]
-    }
-    try:
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
-        res_data = response.json()
-        print(f"[MSG91 RESPONSE] Status: {response.status_code}, Body: {res_data}")
-        return response.status_code == 200
-    except Exception as e:
-        print(f"[MSG91 ERROR] Failed to send SMS: {e}")
-        return False
+    return get_sms_provider().send_sms(
+        phone=clean_phone,
+        event_type=event_type,
+        message_text=msg_text,
+        template_id=template_id,
+        params={"otp": otp},
+        user_id=user_id
+    )
 
 
 def run_password_reset_cleanup():
@@ -650,6 +642,142 @@ def run_password_reset_cleanup():
         print(f"[CLEANUP ERROR] Failed to run password reset cleanup: {e}")
 
 
+def run_registration_otp_cleanup():
+    try:
+        now = datetime.utcnow()
+        expired_unused = RegistrationOTP.query.filter(
+            RegistrationOTP.otp_expires_at < now,
+            RegistrationOTP.is_used == False
+        ).all()
+        for r in expired_unused:
+            db.session.delete(r)
+            
+        limit_24h = now - timedelta(hours=24)
+        expired_used = RegistrationOTP.query.filter(
+            RegistrationOTP.is_used == True,
+            RegistrationOTP.created_at < limit_24h
+        ).all()
+        for r in expired_used:
+            db.session.delete(r)
+            
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        print(f"[CLEANUP ERROR] Failed to run registration OTP cleanup: {e}")
+
+
+@auth_bp.route('/register-request-otp', methods=['POST'])
+def register_request_otp():
+    run_registration_otp_cleanup()
+    
+    data = request.get_json() or {}
+    phone = data.get('phone', '').strip()
+
+    if not phone:
+        return jsonify({"msg": "Phone number is required."}), 400
+
+    clean_phone = phone[-10:] if len(phone) >= 10 else phone
+
+    # Indian Phone Validation
+    if not re.match(r'^[6-9]\d{9}$', clean_phone):
+        return jsonify({"msg": "Please enter a valid 10-digit Indian phone number starting with 6, 7, 8, or 9."}), 400
+
+    # Prevent registration if user already exists
+    existing_user = User.query.filter_by(phone=clean_phone).first()
+    if existing_user:
+        return jsonify({"msg": "An account with this phone number already exists."}), 400
+
+    # 1. OTP Cooldown Check: 60 seconds
+    cooldown_limit = datetime.utcnow() - timedelta(seconds=60)
+    recent_otp = RegistrationOTP.query.filter(
+        RegistrationOTP.phone == clean_phone,
+        RegistrationOTP.created_at >= cooldown_limit
+    ).first()
+    if recent_otp:
+        return jsonify({"msg": "Please wait 60 seconds before requesting a new OTP."}), 429
+
+    # 2. Rate Limiting Check: 5/hour, 10/day
+    one_hour_ago = datetime.utcnow() - timedelta(hours=1)
+    hourly_requests = RegistrationOTP.query.filter(
+        RegistrationOTP.phone == clean_phone,
+        RegistrationOTP.created_at >= one_hour_ago
+    ).count()
+    if hourly_requests >= 5:
+        return jsonify({"msg": "Too many OTP requests. Please try again later."}), 429
+
+    one_day_ago = datetime.utcnow() - timedelta(days=1)
+    daily_requests = RegistrationOTP.query.filter(
+        RegistrationOTP.phone == clean_phone,
+        RegistrationOTP.created_at >= one_day_ago
+    ).count()
+    if daily_requests >= 10:
+        return jsonify({"msg": "Too many OTP requests. Please try again tomorrow."}), 429
+
+    # Generate 6-digit OTP
+    otp = "".join([str(random.randint(0, 9)) for _ in range(6)])
+    otp_hash = generate_password_hash(otp)
+    otp_expires_at = datetime.utcnow() + timedelta(minutes=5)
+    
+    # Store hashed OTP
+    reg_record = RegistrationOTP(
+        phone=clean_phone,
+        otp_hash=otp_hash,
+        otp_expires_at=otp_expires_at
+    )
+    db.session.add(reg_record)
+    db.session.commit()
+    
+    # Send SMS
+    success = send_otp_sms(clean_phone, otp, event_type="OTP_SIGNUP")
+    if not success:
+        return jsonify({"msg": "Failed to send OTP. Please try again."}), 500
+
+    return jsonify({"msg": "Verification OTP sent successfully."}), 200
+
+
+@auth_bp.route('/register-verify-otp', methods=['POST'])
+def register_verify_otp():
+    run_registration_otp_cleanup()
+    
+    data = request.get_json() or {}
+    phone = data.get('phone', '').strip()
+    otp = data.get('otp', '').strip()
+
+    if not phone or not otp:
+        return jsonify({"msg": "Phone and OTP are required."}), 400
+
+    clean_phone = phone[-10:] if len(phone) >= 10 else phone
+
+    now = datetime.utcnow()
+    record = RegistrationOTP.query.filter(
+        RegistrationOTP.phone == clean_phone,
+        RegistrationOTP.otp_expires_at > now,
+        RegistrationOTP.is_used == False
+    ).order_by(RegistrationOTP.created_at.desc()).first()
+
+    if not record:
+        return jsonify({"msg": "Invalid or expired OTP."}), 400
+
+    # Verification lockout limit (5 attempts)
+    if record.verification_attempts >= 5:
+        return jsonify({"msg": "Too many failed attempts. Please request a new OTP."}), 400
+
+    # Increment attempts
+    record.verification_attempts += 1
+    db.session.commit()
+
+    if not check_password_hash(record.otp_hash, otp):
+        return jsonify({"msg": "Invalid or expired OTP."}), 400
+
+    # Generate a secure single-use registration token
+    registration_token = secrets.token_hex(32)
+    record.registration_token = registration_token
+    record.token_expires_at = datetime.utcnow() + timedelta(minutes=15)
+    db.session.commit()
+
+    return jsonify({"registration_token": registration_token}), 200
+
+
 @auth_bp.route('/forgot-password', methods=['POST'])
 def forgot_password():
     run_password_reset_cleanup()
@@ -660,30 +788,40 @@ def forgot_password():
     if not phone:
         return jsonify({"msg": "Phone number is required."}), 400
 
+    clean_phone = phone[-10:] if len(phone) >= 10 else phone
+
     # Indian Phone Validation
-    if not re.match(r'^[6-9]\d{9}$', phone):
+    if not re.match(r'^[6-9]\d{9}$', clean_phone):
         return jsonify({"msg": "Please enter a valid 10-digit Indian phone number starting with 6, 7, 8, or 9."}), 400
 
     # 1. OTP Cooldown Check: Prevent repeated generation within 60 seconds
     cooldown_limit = datetime.utcnow() - timedelta(seconds=60)
     recent_otp = PasswordReset.query.filter(
-        PasswordReset.phone == phone,
+        PasswordReset.phone == clean_phone,
         PasswordReset.created_at >= cooldown_limit
     ).first()
     if recent_otp:
         return jsonify({"msg": "Please wait 60 seconds before requesting a new OTP."}), 429
 
-    # 2. Rate Limiting Check: Maximum 5 OTP requests per hour
+    # 2. Rate Limiting Check: Maximum 5 OTP requests per hour, 10 per day
     one_hour_ago = datetime.utcnow() - timedelta(hours=1)
     hourly_requests = PasswordReset.query.filter(
-        PasswordReset.phone == phone,
+        PasswordReset.phone == clean_phone,
         PasswordReset.created_at >= one_hour_ago
     ).count()
     if hourly_requests >= 5:
         return jsonify({"msg": "Too many password reset requests. Please try again later."}), 429
 
+    one_day_ago = datetime.utcnow() - timedelta(days=1)
+    daily_requests = PasswordReset.query.filter(
+        PasswordReset.phone == clean_phone,
+        PasswordReset.created_at >= one_day_ago
+    ).count()
+    if daily_requests >= 10:
+        return jsonify({"msg": "Too many password reset requests. Please try again tomorrow."}), 429
+
     # 3. Enumeration Attack Prevention: Check if user exists in DB
-    user = User.query.filter_by(phone=phone).first()
+    user = User.query.filter_by(phone=clean_phone).first()
     if not user:
         # Return generic success
         return jsonify({"msg": "If the account exists, an OTP has been sent."}), 200
@@ -695,7 +833,7 @@ def forgot_password():
     
     # Store hashed OTP
     reset_record = PasswordReset(
-        phone=phone,
+        phone=clean_phone,
         otp_hash=otp_hash,
         otp_expires_at=otp_expires_at
     )
@@ -706,7 +844,7 @@ def forgot_password():
     log_audit_event(user.id, "OTP Requested", "OTP requested for password recovery.")
 
     # Send SMS
-    success = send_otp_sms(phone, otp)
+    success = send_otp_sms(clean_phone, otp, event_type="OTP_RECOVERY", user_id=user.id)
     if not success:
         return jsonify({"msg": "Failed to send OTP. Please try again."}), 500
 

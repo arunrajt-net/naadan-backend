@@ -327,3 +327,34 @@ class PasswordReset(db.Model):
     token_expires_at = db.Column(db.DateTime, nullable=True)
     is_used = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SMSAuditLog(db.Model):
+    __tablename__ = 'sms_audit_logs'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    phone = db.Column(db.String(20), nullable=False)
+    event_type = db.Column(db.String(50), nullable=False)  # 'OTP_RECOVERY', 'OTP_SIGNUP', 'NEW_ORDER_ALERT'
+    provider = db.Column(db.String(20), nullable=False)    # 'MSG91', 'MOCK'
+    template_id = db.Column(db.String(50), nullable=True)
+    message_content = db.Column(db.Text, nullable=False)
+    provider_reference = db.Column(db.String(100), nullable=True)
+    delivery_status = db.Column(db.String(20), default="PENDING")  # PENDING, SENT, FAILED
+    error_message = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    user = db.relationship("User", backref=db.backref("sms_logs", lazy=True))
+
+
+class RegistrationOTP(db.Model):
+    __tablename__ = 'registration_otps'
+    id = db.Column(db.Integer, primary_key=True)
+    phone = db.Column(db.String(20), nullable=False)
+    otp_hash = db.Column(db.String(100), nullable=False)
+    otp_expires_at = db.Column(db.DateTime, nullable=False)
+    verification_attempts = db.Column(db.Integer, default=0, nullable=False)
+    registration_token = db.Column(db.String(255), nullable=True)
+    token_expires_at = db.Column(db.DateTime, nullable=True)
+    is_used = db.Column(db.Boolean, default=False, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+

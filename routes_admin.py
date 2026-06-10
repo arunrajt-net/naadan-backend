@@ -1,6 +1,6 @@
 from flask import Blueprint, jsonify
 from auth_middleware import firebase_required
-from models import db, User, Product, Order
+from models import db, User, Product, Order, SMSAuditLog
 
 admin_bp = Blueprint('admin', __name__)
 
@@ -117,4 +117,38 @@ def get_dashboard_stats(current_user):
             "orders": recent_orders_list
         }
     }), 200
+
+
+@admin_bp.route('/sms-stats', methods=['GET'])
+@firebase_required()
+def get_sms_stats(current_user):
+    if not current_user.is_admin:
+        return jsonify({"msg": "Forbidden. Admin capability required."}), 403
+
+    from datetime import datetime, time as dtime
+    
+    now = datetime.utcnow()
+    today_start = datetime.combine(now.date(), dtime.min)
+    month_start = datetime(now.year, now.month, 1)
+
+    sent_today = SMSAuditLog.query.filter(SMSAuditLog.created_at >= today_start, SMSAuditLog.delivery_status != 'FAILED').count()
+    sent_this_month = SMSAuditLog.query.filter(SMSAuditLog.created_at >= month_start, SMSAuditLog.delivery_status != 'FAILED').count()
+    
+    otp_count = SMSAuditLog.query.filter(SMSAuditLog.event_type.in_(['OTP_RECOVERY', 'OTP_SIGNUP']), SMSAuditLog.delivery_status != 'FAILED').count()
+    order_alert_count = SMSAuditLog.query.filter(SMSAuditLog.event_type == 'NEW_ORDER_ALERT', SMSAuditLog.delivery_status != 'FAILED').count()
+    failed_count = SMSAuditLog.query.filter(SMSAuditLog.delivery_status == 'FAILED').count()
+    
+    # Calculate successful SMS total count
+    successful_sms = SMSAuditLog.query.filter(SMSAuditLog.delivery_status != 'FAILED').count()
+    estimated_cost = round(successful_sms * 0.20, 2)  # 20 paise per SMS
+
+    return jsonify({
+        "sent_today": sent_today,
+        "sent_this_month": sent_this_month,
+        "otp_count": otp_count,
+        "order_alert_count": order_alert_count,
+        "failed_count": failed_count,
+        "estimated_cost": estimated_cost
+    }), 200
+
 

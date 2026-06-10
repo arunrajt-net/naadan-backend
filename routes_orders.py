@@ -250,6 +250,23 @@ def create_order(current_user):
             f"Placed order {new_order.id} for product '{product.name}' (Qty: {qty}, Total: {total_price})"
         )
         
+        # Send SMS to farmer using the unified SMS provider
+        try:
+            if farmer.phone:
+                from sms_provider import get_sms_provider
+                import os
+                sms_text = f"New order received on Naadan. Please open the app to view order details."
+                template_id = os.environ.get("MSG91_ORDER_TEMPLATE_ID", "").strip()
+                get_sms_provider().send_sms(
+                    phone=farmer.phone,
+                    event_type="NEW_ORDER_ALERT",
+                    message_text=sms_text,
+                    template_id=template_id,
+                    user_id=farmer.id
+                )
+        except Exception as sms_err:
+            print(f"[ORDER SMS ERROR] Failed to send order SMS to farmer: {sms_err}")
+            
         notify_status_change(new_order, initial_status)
         
         return jsonify({"msg": "Order placed", "id": new_order.id, "status": new_order.status}), 201
