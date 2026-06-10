@@ -315,3 +315,15 @@ class LocationAudit(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
     user = db.relationship("User", backref=db.backref("location_audits", lazy=True))
+
+
+class PasswordReset(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    phone = db.Column(db.String(20), nullable=False)
+    otp_hash = db.Column(db.String(100), nullable=False)
+    otp_expires_at = db.Column(db.DateTime, nullable=False)
+    verification_attempts = db.Column(db.Integer, default=0, nullable=False)
+    reset_token = db.Column(db.String(255), nullable=True)
+    token_expires_at = db.Column(db.DateTime, nullable=True)
+    is_used = db.Column(db.Boolean, default=False, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)

@@ -34,6 +34,39 @@ def add_product(current_user):
         return jsonify({"msg": "Only farmers can add products"}), 403
 
     data = request.get_json() or {}
+
+    # Validate Price and Quantity
+    price_val = data.get('price')
+    qty_val = data.get('quantity')
+    
+    # Price check
+    try:
+        if price_val is None:
+            return jsonify({"msg": "Price must be greater than zero."}), 400
+        price_float = float(price_val)
+        if price_float <= 0:
+            return jsonify({"msg": "Price must be greater than zero."}), 400
+    except (ValueError, TypeError):
+        return jsonify({"msg": "Price must be greater than zero."}), 400
+
+    # Quantity check
+    try:
+        if qty_val is None:
+            return jsonify({"msg": "Quantity must be greater than zero."}), 400
+        if isinstance(qty_val, (int, float)):
+            qty_float = float(qty_val)
+        else:
+            import re
+            qty_str = str(qty_val).strip()
+            match = re.match(r'^([\d\.\-]+)\s*(.*)$', qty_str)
+            if not match:
+                return jsonify({"msg": "Quantity must be greater than zero."}), 400
+            qty_float = float(match.group(1))
+        
+        if qty_float <= 0:
+            return jsonify({"msg": "Quantity must be greater than zero."}), 400
+    except (ValueError, TypeError):
+        return jsonify({"msg": "Quantity must be greater than zero."}), 400
     
     # 2. Client-Side Idempotency Key check (Condition 4)
     idempotency_key = data.get('idempotency_key')
@@ -235,8 +268,24 @@ def restock_product(product_id, current_user):
 
     data = request.get_json() or {}
     new_qty = data.get('quantity')
-    if not new_qty:
-        return jsonify({"msg": "quantity parameter required"}), 400
+    if new_qty is None:
+        return jsonify({"msg": "Quantity must be greater than zero."}), 400
+
+    try:
+        if isinstance(new_qty, (int, float)):
+            qty_float = float(new_qty)
+        else:
+            import re
+            qty_str = str(new_qty).strip()
+            match = re.match(r'^([\d\.\-]+)\s*(.*)$', qty_str)
+            if not match:
+                return jsonify({"msg": "Quantity must be greater than zero."}), 400
+            qty_float = float(match.group(1))
+        
+        if qty_float <= 0:
+            return jsonify({"msg": "Quantity must be greater than zero."}), 400
+    except (ValueError, TypeError):
+        return jsonify({"msg": "Quantity must be greater than zero."}), 400
 
     old_qty = product.quantity
     product.quantity = str(new_qty).strip()

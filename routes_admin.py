@@ -47,3 +47,74 @@ def get_gps_health(current_user):
         "duplicate_gps_count": duplicate_gps_count,
         "orders_without_snapshots": orders_without_snapshots
     }), 200
+
+
+@admin_bp.route('/dashboard-stats', methods=['GET'])
+@firebase_required()
+def get_dashboard_stats(current_user):
+    if not current_user.is_admin:
+        return jsonify({"msg": "Forbidden. Admin capability required."}), 403
+
+    total_farmers = User.query.filter_by(is_farmer=True).count()
+    total_buyers = User.query.filter_by(is_buyer=True).count()
+
+    total_products = Product.query.count()
+    active_products = Product.query.filter_by(is_available=True).count()
+
+    total_orders = Order.query.count()
+    pending_orders = Order.query.filter(Order.status.in_(['Pending Payment', 'Accepted', 'Packed', 'Out For Delivery'])).count()
+    completed_orders = Order.query.filter(Order.status.in_(['Completed', 'COMPLETED'])).count()
+
+    # Recent Activity:
+    # 1. Last 5 registrations
+    recent_users = User.query.order_by(User.created_at.desc()).limit(5).all()
+    recent_users_list = []
+    for u in recent_users:
+        recent_users_list.append({
+            "id": u.id,
+            "name": u.name,
+            "role": u.role,
+            "created_at": u.created_at.isoformat() if u.created_at else None
+        })
+
+    # 2. Last 5 product listings
+    recent_products = Product.query.order_by(Product.created_at.desc()).limit(5).all()
+    recent_products_list = []
+    for p in recent_products:
+        recent_products_list.append({
+            "id": p.id,
+            "name": p.name,
+            "price": p.price,
+            "quantity": p.quantity,
+            "created_at": p.created_at.isoformat() if p.created_at else None
+        })
+
+    # 3. Last 5 orders
+    recent_orders = Order.query.order_by(Order.created_at.desc()).limit(5).all()
+    recent_orders_list = []
+    for o in recent_orders:
+        recent_orders_list.append({
+            "id": o.id,
+            "quantity_ordered": o.quantity_ordered,
+            "total_price": o.total_price,
+            "status": o.status,
+            "created_at": o.created_at.isoformat() if o.created_at else None
+        })
+
+    return jsonify({
+        "stats": {
+            "total_farmers": total_farmers,
+            "total_buyers": total_buyers,
+            "total_products": total_products,
+            "active_products": active_products,
+            "total_orders": total_orders,
+            "pending_orders": pending_orders,
+            "completed_orders": completed_orders
+        },
+        "recent_activity": {
+            "users": recent_users_list,
+            "products": recent_products_list,
+            "orders": recent_orders_list
+        }
+    }), 200
+

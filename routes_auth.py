@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
-from models import db, User, Product, LocationAudit, AuditEvent
-from datetime import datetime
+from models import db, User, Product, LocationAudit, AuditEvent, PasswordReset
+from datetime import datetime, timedelta
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from auth_middleware import decode_jwt_payload_offline, firebase_required
@@ -73,6 +73,17 @@ def sync_user():
         if not phone and email and '@naadan.com' in email:
             phone = email.split('@')[0]
             
+        import os
+        admin_email = os.environ.get("ADMIN_EMAIL", "admin@naadan.com").strip()
+        admin_phone = os.environ.get("ADMIN_PHONE", "9497856550").strip()
+        is_admin_user = (email == admin_email or phone == admin_phone or uid == "admin-uid")
+
+        if role == 'admin' and not is_admin_user:
+            return jsonify({"msg": "Forbidden. Admin role is restricted."}), 403
+
+        if is_admin_user:
+            role = 'admin'
+
         print(f"[DEBUG_SYNC] UID: {uid}, Email: {email}, Role Input: {role}, Is Signup: {is_signup}")
         
         # 1. Search by firebase_uid
@@ -99,6 +110,12 @@ def sync_user():
                     user.is_admin = True
                 else:
                     user.is_buyer = True
+
+            if is_admin_user:
+                user.is_admin = True
+                user.is_farmer = True
+                user.is_buyer = True
+                user.role = 'admin'
 
             # Update name safely: only overwrite if a custom name is explicitly passed
             if 'name' in data and data.get('name') and data.get('name') not in ['Anonymous', 'User']:
@@ -398,7 +415,16 @@ def enable_role(current_user):
         current_user.delivery_price_per_km = 0.0
     elif role_to_enable == 'admin':
         # Strictly reject self-promotion to admin!
-        return jsonify({"msg": "Forbidden. Admin capability can only be granted directly by backend."}), 403
+        import os
+        admin_email = os.environ.get("ADMIN_EMAIL", "admin@naadan.com").strip()
+        admin_phone = os.environ.get("ADMIN_PHONE", "9497856550").strip()
+        if current_user.email == admin_email or current_user.phone == admin_phone or current_user.firebase_uid == "admin-uid":
+            current_user.is_admin = True
+            current_user.is_buyer = True
+            current_user.is_farmer = True
+            current_user.role = 'admin'
+        else:
+            return jsonify({"msg": "Forbidden. Admin capability can only be granted directly by backend."}), 403
     else:
         return jsonify({"msg": "Invalid role"}), 400
         
@@ -452,3 +478,402 @@ def get_location_history(current_user):
     return jsonify(res), 200
 
 
+@auth_bp.route('/admin-login', methods=['POST'])
+def admin_login():
+    from werkzeug.security import check_password_hash
+    import os
+    
+    data = request.get_json() or {}
+    username = data.get('username', '').strip()  # can be email or phone
+    password = data.get('password', '').strip()
+
+    admin_email = os.environ.get("ADMIN_EMAIL", "admin@naadan.com").strip()
+    admin_phone = os.environ.get("ADMIN_PHONE", "9497856550").strip()
+    admin_hash = os.environ.get("ADMIN_PASSWORD_HASH", "").strip()
+
+    if not username or not password:
+        return jsonify({"msg": "Username and password are required."}), 400
+
+    # Match either email or phone
+    if username != admin_email and username != admin_phone:
+        return jsonify({"msg": "Invalid credentials."}), 401
+
+    if not admin_hash or not check_password_hash(admin_hash, password):
+        return jsonify({"msg": "Invalid credentials."}), 401
+
+    # Check if admin user exists in DB, otherwise create them
+    admin_user = User.query.filter((User.email == admin_email) | (User.phone == admin_phone) | (User.firebase_uid == "admin-uid")).first()
+    if not admin_user:
+        admin_user = User(
+            firebase_uid="admin-uid",
+            email=admin_email,
+            name="Panchayat Admin",
+            role="admin",
+            phone=admin_phone,
+            lat=10.0,
+            lng=76.0,
+            is_buyer=True,
+            is_farmer=True,
+            is_admin=True,
+            is_verified=True,
+            verification_status="VERIFIED"
+        )
+        db.session.add(admin_user)
+        db.session.commit()
+        log_audit_event(admin_user.id, "Admin Created", "Auto-created admin user record on successful login")
+    else:
+        # Ensure correct roles are set
+        admin_user.is_admin = True
+        admin_user.is_buyer = True
+        admin_user.is_farmer = True
+        admin_user.role = "admin"
+        admin_user.firebase_uid = "admin-uid"  # Align UID
+        db.session.commit()
+
+    log_audit_event(admin_user.id, "Admin Login", "Successful admin session login")
+
+    # Return details including the custom admin token
+    return jsonify({
+        "msg": "Admin logged in successfully",
+        "token": "admin-session-token",
+        "user": {
+            "id": admin_user.id,
+            "name": admin_user.name,
+            "email": admin_user.email,
+            "role": "admin",
+            "phone": admin_user.phone,
+            "lat": admin_user.lat,
+            "lng": admin_user.lng,
+            "delivery_available": False,
+            "delivery_price_per_km": 0.0,
+            "is_verified": True,
+            "verification_status": "VERIFIED",
+            "upi_id": "",
+            "farm_name": "Panchayat Admin",
+            "is_admin": True,
+            "location_privacy": "public"
+        }
+    }), 200
+
+
+# ============================================================
+# PASSWORD RECOVERY FLOW FOR PHONE USERS
+# ============================================================
+import secrets
+import re
+import random
+from werkzeug.security import generate_password_hash, check_password_hash
+
+def send_otp_sms(phone, otp):
+    import os
+    import requests
+    
+    # 1. Prepend 91 country code if exactly 10 digits
+    full_phone = phone
+    if len(phone) == 10 and phone.isdigit():
+        full_phone = "91" + phone
+        
+    auth_key = os.environ.get("MSG91_AUTH_KEY", "").strip()
+    template_id = os.environ.get("MSG91_TEMPLATE_ID", "").strip()
+    
+    if not auth_key or not template_id:
+        # Development fallback
+        print(f"\n[DEVELOPMENT SMS FALLBACK] Sending OTP {otp} to {full_phone}\n")
+        log_path = os.path.join(os.path.dirname(__file__), "otp_log.txt")
+        try:
+            with open(log_path, "a") as f:
+                f.write(f"{datetime.utcnow().isoformat()} - Phone: {full_phone} - OTP: {otp}\n")
+        except Exception as e:
+            print("Failed to write to otp_log.txt:", str(e))
+        return True
+
+    # Real MSG91 API Request
+    url = "https://control.msg91.com/api/v5/flow/"
+    headers = {
+        "authkey": auth_key,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "template_id": template_id,
+        "short_url": "0",
+        "recipients": [
+            {
+                "mobiles": full_phone,
+                "otp": otp
+            }
+        ]
+    }
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        res_data = response.json()
+        print(f"[MSG91 RESPONSE] Status: {response.status_code}, Body: {res_data}")
+        return response.status_code == 200
+    except Exception as e:
+        print(f"[MSG91 ERROR] Failed to send SMS: {e}")
+        return False
+
+
+def run_password_reset_cleanup():
+    try:
+        now = datetime.utcnow()
+        # 1. Expired unused OTP records (older than 5 minutes since expiry)
+        expired_unused = PasswordReset.query.filter(
+            PasswordReset.otp_expires_at < now,
+            PasswordReset.is_used == False
+        ).all()
+        for r in expired_unused:
+            db.session.delete(r)
+            
+        # 2. Used reset records older than 24 hours
+        limit_24h = now - timedelta(hours=24)
+        expired_used = PasswordReset.query.filter(
+            PasswordReset.is_used == True,
+            PasswordReset.created_at < limit_24h
+        ).all()
+        for r in expired_used:
+            db.session.delete(r)
+            
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        print(f"[CLEANUP ERROR] Failed to run password reset cleanup: {e}")
+
+
+@auth_bp.route('/forgot-password', methods=['POST'])
+def forgot_password():
+    run_password_reset_cleanup()
+    
+    data = request.get_json() or {}
+    phone = data.get('phone', '').strip()
+
+    if not phone:
+        return jsonify({"msg": "Phone number is required."}), 400
+
+    # Indian Phone Validation
+    if not re.match(r'^[6-9]\d{9}$', phone):
+        return jsonify({"msg": "Please enter a valid 10-digit Indian phone number starting with 6, 7, 8, or 9."}), 400
+
+    # 1. OTP Cooldown Check: Prevent repeated generation within 60 seconds
+    cooldown_limit = datetime.utcnow() - timedelta(seconds=60)
+    recent_otp = PasswordReset.query.filter(
+        PasswordReset.phone == phone,
+        PasswordReset.created_at >= cooldown_limit
+    ).first()
+    if recent_otp:
+        return jsonify({"msg": "Please wait 60 seconds before requesting a new OTP."}), 429
+
+    # 2. Rate Limiting Check: Maximum 5 OTP requests per hour
+    one_hour_ago = datetime.utcnow() - timedelta(hours=1)
+    hourly_requests = PasswordReset.query.filter(
+        PasswordReset.phone == phone,
+        PasswordReset.created_at >= one_hour_ago
+    ).count()
+    if hourly_requests >= 5:
+        return jsonify({"msg": "Too many password reset requests. Please try again later."}), 429
+
+    # 3. Enumeration Attack Prevention: Check if user exists in DB
+    user = User.query.filter_by(phone=phone).first()
+    if not user:
+        # Return generic success
+        return jsonify({"msg": "If the account exists, an OTP has been sent."}), 200
+
+    # Generate 6-digit OTP
+    otp = "".join([str(random.randint(0, 9)) for _ in range(6)])
+    otp_hash = generate_password_hash(otp)
+    otp_expires_at = datetime.utcnow() + timedelta(minutes=5)
+    
+    # Store hashed OTP
+    reset_record = PasswordReset(
+        phone=phone,
+        otp_hash=otp_hash,
+        otp_expires_at=otp_expires_at
+    )
+    db.session.add(reset_record)
+    db.session.commit()
+    
+    # Audit log entry
+    log_audit_event(user.id, "OTP Requested", "OTP requested for password recovery.")
+
+    # Send SMS
+    success = send_otp_sms(phone, otp)
+    if not success:
+        return jsonify({"msg": "Failed to send OTP. Please try again."}), 500
+
+    return jsonify({"msg": "If the account exists, an OTP has been sent."}), 200
+
+
+@auth_bp.route('/verify-recovery-otp', methods=['POST'])
+def verify_recovery_otp():
+    run_password_reset_cleanup()
+    
+    data = request.get_json() or {}
+    phone = data.get('phone', '').strip()
+    otp = data.get('otp', '').strip()
+
+    if not phone or not otp:
+        return jsonify({"msg": "Phone and OTP are required."}), 400
+
+    # Find the latest active record
+    now = datetime.utcnow()
+    record = PasswordReset.query.filter(
+        PasswordReset.phone == phone,
+        PasswordReset.otp_expires_at > now,
+        PasswordReset.is_used == False
+    ).order_by(PasswordReset.created_at.desc()).first()
+
+    if not record:
+        return jsonify({"msg": "Invalid or expired OTP."}), 400
+
+    # Verification lockout limit (5 attempts)
+    if record.verification_attempts >= 5:
+        return jsonify({"msg": "Too many failed attempts. Please request a new OTP."}), 400
+
+    # Increment attempts
+    record.verification_attempts += 1
+    db.session.commit()
+
+    if not check_password_hash(record.otp_hash, otp):
+        return jsonify({"msg": "Invalid or expired OTP."}), 400
+
+    # Generate a secure single-use recovery token
+    reset_token = secrets.token_hex(32)
+    record.reset_token = reset_token
+    record.token_expires_at = datetime.utcnow() + timedelta(minutes=15)
+    db.session.commit()
+
+    # Log audit event
+    user = User.query.filter_by(phone=phone).first()
+    if user:
+        log_audit_event(user.id, "OTP Verified", "OTP successfully verified for password recovery.")
+
+    return jsonify({"reset_token": reset_token}), 200
+
+
+@auth_bp.route('/reset-password', methods=['POST'])
+def reset_password():
+    run_password_reset_cleanup()
+    
+    data = request.get_json() or {}
+    phone = data.get('phone', '').strip()
+    reset_token = data.get('reset_token', '').strip()
+    new_password = data.get('new_password', '').strip()
+
+    if not phone or not reset_token or not new_password:
+        return jsonify({"msg": "Phone, reset token, and new password are required."}), 400
+
+    # Strong Password Validation
+    if not re.match(r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$', new_password):
+        return jsonify({"msg": "Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, and one number."}), 400
+
+    now = datetime.utcnow()
+    record = PasswordReset.query.filter_by(phone=phone, reset_token=reset_token, is_used=False).first()
+    if not record or record.token_expires_at < now:
+        return jsonify({"msg": "Invalid or expired reset token."}), 400
+
+    user = User.query.filter_by(phone=phone).first()
+    if not user:
+        return jsonify({"msg": "User not found."}), 404
+
+    # Update in Firebase Auth
+    import os
+    import firebase_admin
+    from firebase_admin import auth as admin_auth
+    
+    firebase_configured = True
+    try:
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app()
+    except Exception as e:
+        print("Firebase Admin SDK initialization skipped/failed, using local dev mock mode:", str(e))
+        firebase_configured = False
+
+    # Perform credentials update
+    if firebase_configured:
+        try:
+            dummy_email = f"{phone}@naadan.com"
+            try:
+                fb_user = admin_auth.get_user_by_email(dummy_email)
+            except Exception:
+                fb_user = admin_auth.get_user_by_email(user.email)
+            
+            admin_auth.update_user(fb_user.uid, password=new_password)
+            admin_auth.revoke_refresh_tokens(fb_user.uid)
+            print(f"[FIREBASE SUCCESS] Password updated for UID: {fb_user.uid} and active sessions revoked.")
+        except Exception as fb_err:
+            print("[FIREBASE ERROR] Failed to update password via admin SDK:", str(fb_err))
+            firebase_configured = False
+
+    if not firebase_configured:
+        print(f"\n[DEV MODE - NO FIREBASE ACCOUNT] Password reset simulated successfully for user phone {phone} to: {new_password}\n")
+
+    # Invalidate reset token
+    record.is_used = True
+    db.session.commit()
+
+    # Log audit event
+    log_audit_event(user.id, "Password Reset Complete", "Password updated and active sessions revoked.")
+
+    return jsonify({"msg": "Password updated successfully."}), 200
+
+
+
+@auth_bp.route('/reset-password-firebase', methods=['POST'])
+def reset_password_firebase():
+    """Reset password after Firebase Phone OTP verification (free SMS via Firebase)."""
+    import re
+    import firebase_admin
+    from firebase_admin import auth as admin_auth
+    from werkzeug.security import generate_password_hash
+
+    data = request.json or {}
+    phone = data.get('phone', '').strip()
+    new_password = data.get('new_password', '').strip()
+    firebase_id_token = data.get('firebase_id_token', '').strip()
+
+    if not phone or not new_password or not firebase_id_token:
+        return jsonify({'msg': 'Missing required fields.'}), 400
+
+    # Validate password strength
+    if not re.match(r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$', new_password):
+        return jsonify({'msg': 'Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, and one number.'}), 400
+
+    # Verify Firebase ID token (only needs projectId, works without service account)
+    try:
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(options={'projectId': 'naadan-ebd6e'})
+        decoded_token = admin_auth.verify_id_token(firebase_id_token)
+        token_phone = decoded_token.get('phone_number', '')  # e.g. '+919497856550'
+        expected_phone = '+91' + phone
+        if token_phone != expected_phone:
+            return jsonify({'msg': 'Phone verification mismatch. Please try again.'}), 400
+    except Exception as e:
+        print(f"[FIREBASE TOKEN ERROR] {e}")
+        return jsonify({'msg': 'OTP verification failed or expired. Please try again.'}), 401
+
+    # Find user in DB by phone number
+    user = User.query.filter_by(phone=phone).first()
+    if not user:
+        return jsonify({'msg': 'No account found with this phone number.'}), 404
+
+    # Update password hash in DB
+    user.password_hash = generate_password_hash(new_password)
+    db.session.commit()
+
+    # Try to update Firebase password (best-effort)
+    try:
+        dummy_email = f'{phone}@naadan.com'
+        try:
+            fb_user = admin_auth.get_user_by_email(dummy_email)
+        except Exception:
+            fb_user = None
+        if fb_user:
+            admin_auth.update_user(fb_user.uid, password=new_password)
+            admin_auth.revoke_refresh_tokens(fb_user.uid)
+            print(f"[FIREBASE] Password updated for {fb_user.uid}")
+    except Exception as fb_err:
+        print(f"[FIREBASE FALLBACK] Could not update Firebase password: {fb_err}")
+
+    # Audit log
+    log_audit_event(user.id, 'Password Reset Complete (Firebase OTP)', f'Password reset via Firebase Phone OTP for {phone}.')
+
+    return jsonify({'msg': 'Password updated successfully.'}), 200
