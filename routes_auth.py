@@ -5,6 +5,7 @@ from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from auth_middleware import decode_jwt_payload_offline, firebase_required
 import math
+import os
 
 def calculate_haversine(lat1, lon1, lat2, lon2):
     if lat1 is None or lon1 is None or lat2 is None or lon2 is None:
@@ -592,12 +593,22 @@ import random
 from werkzeug.security import generate_password_hash, check_password_hash
 
 def send_otp_sms(phone, otp, event_type="OTP_RECOVERY", user_id=None):
-    from sms_provider import get_sms_provider
+    from sms_provider import get_sms_provider, MockProvider
     import os
     
     clean_phone = phone[-10:] if len(phone) >= 10 else phone
     msg_text = f"Your Naadan verification code is {otp}. It is valid for 5 minutes."
     
+    if clean_phone == "7777777777":
+        return MockProvider().send_sms(
+            phone=clean_phone,
+            event_type=event_type,
+            message_text=msg_text,
+            template_id=None,
+            params={"otp": otp},
+            user_id=user_id
+        )
+
     # Check if there is specific template configured
     if event_type == "OTP_RECOVERY":
         template_id = os.environ.get("MSG91_TEMPLATE_ID", "").strip()
@@ -714,23 +725,39 @@ def register_request_otp():
         return jsonify({"msg": "Too many OTP requests. Please try again tomorrow."}), 429
 
     # Generate 6-digit OTP
-    otp = "".join([str(random.randint(0, 9)) for _ in range(6)])
-    otp_hash = generate_password_hash(otp)
-    otp_expires_at = datetime.utcnow() + timedelta(minutes=5)
-    
-    # Store hashed OTP
-    reg_record = RegistrationOTP(
-        phone=clean_phone,
-        otp_hash=otp_hash,
-        otp_expires_at=otp_expires_at
-    )
-    db.session.add(reg_record)
-    db.session.commit()
-    
-    # Send SMS
-    success = send_otp_sms(clean_phone, otp, event_type="OTP_SIGNUP")
-    if not success:
-        return jsonify({"msg": "Failed to send OTP. Please try again."}), 500
+    provider_type = os.environ.get("SMS_PROVIDER", "MOCK").upper().strip()
+    if provider_type == "MSG91" and clean_phone != "7777777777":
+        from sms_provider import MSG91OTPService
+        success = MSG91OTPService.send_otp(clean_phone, "OTP_SIGNUP")
+        if not success:
+            return jsonify({"msg": "Failed to send OTP. Please try again."}), 500
+        
+        # Store a placeholder record in DB to track expiry and attempts
+        reg_record = RegistrationOTP(
+            phone=clean_phone,
+            otp_hash="MSG91_OTP",
+            otp_expires_at=datetime.utcnow() + timedelta(minutes=5)
+        )
+        db.session.add(reg_record)
+        db.session.commit()
+    else:
+        otp = "".join([str(random.randint(0, 9)) for _ in range(6)])
+        otp_hash = generate_password_hash(otp)
+        otp_expires_at = datetime.utcnow() + timedelta(minutes=5)
+        
+        # Store hashed OTP
+        reg_record = RegistrationOTP(
+            phone=clean_phone,
+            otp_hash=otp_hash,
+            otp_expires_at=otp_expires_at
+        )
+        db.session.add(reg_record)
+        db.session.commit()
+        
+        # Send SMS
+        success = send_otp_sms(clean_phone, otp, event_type="OTP_SIGNUP")
+        if not success:
+            return jsonify({"msg": "Failed to send OTP. Please try again."}), 500
 
     return jsonify({"msg": "Verification OTP sent successfully."}), 200
 
@@ -766,8 +793,14 @@ def register_verify_otp():
     record.verification_attempts += 1
     db.session.commit()
 
-    if not check_password_hash(record.otp_hash, otp):
-        return jsonify({"msg": "Invalid or expired OTP."}), 400
+    provider_type = os.environ.get("SMS_PROVIDER", "MOCK").upper().strip()
+    if provider_type == "MSG91" and clean_phone != "7777777777":
+        from sms_provider import MSG91OTPService
+        if not MSG91OTPService.verify_otp(clean_phone, otp):
+            return jsonify({"msg": "Invalid or expired OTP."}), 400
+    else:
+        if not check_password_hash(record.otp_hash, otp):
+            return jsonify({"msg": "Invalid or expired OTP."}), 400
 
     # Generate a secure single-use registration token
     registration_token = secrets.token_hex(32)
@@ -827,26 +860,41 @@ def forgot_password():
         return jsonify({"msg": "If the account exists, an OTP has been sent."}), 200
 
     # Generate 6-digit OTP
-    otp = "".join([str(random.randint(0, 9)) for _ in range(6)])
-    otp_hash = generate_password_hash(otp)
-    otp_expires_at = datetime.utcnow() + timedelta(minutes=5)
-    
-    # Store hashed OTP
-    reset_record = PasswordReset(
-        phone=clean_phone,
-        otp_hash=otp_hash,
-        otp_expires_at=otp_expires_at
-    )
-    db.session.add(reset_record)
-    db.session.commit()
-    
+    provider_type = os.environ.get("SMS_PROVIDER", "MOCK").upper().strip()
+    if provider_type == "MSG91" and clean_phone != "7777777777":
+        from sms_provider import MSG91OTPService
+        success = MSG91OTPService.send_otp(clean_phone, "OTP_RECOVERY")
+        if not success:
+            return jsonify({"msg": "Failed to send OTP. Please try again."}), 500
+        
+        reset_record = PasswordReset(
+            phone=clean_phone,
+            otp_hash="MSG91_OTP",
+            otp_expires_at=datetime.utcnow() + timedelta(minutes=5)
+        )
+        db.session.add(reset_record)
+        db.session.commit()
+    else:
+        otp = "".join([str(random.randint(0, 9)) for _ in range(6)])
+        otp_hash = generate_password_hash(otp)
+        otp_expires_at = datetime.utcnow() + timedelta(minutes=5)
+        
+        # Store hashed OTP
+        reset_record = PasswordReset(
+            phone=clean_phone,
+            otp_hash=otp_hash,
+            otp_expires_at=otp_expires_at
+        )
+        db.session.add(reset_record)
+        db.session.commit()
+        
+        # Send SMS
+        success = send_otp_sms(clean_phone, otp, event_type="OTP_RECOVERY", user_id=user.id)
+        if not success:
+            return jsonify({"msg": "Failed to send OTP. Please try again."}), 500
+
     # Audit log entry
     log_audit_event(user.id, "OTP Requested", "OTP requested for password recovery.")
-
-    # Send SMS
-    success = send_otp_sms(clean_phone, otp, event_type="OTP_RECOVERY", user_id=user.id)
-    if not success:
-        return jsonify({"msg": "Failed to send OTP. Please try again."}), 500
 
     return jsonify({"msg": "If the account exists, an OTP has been sent."}), 200
 
@@ -881,8 +929,14 @@ def verify_recovery_otp():
     record.verification_attempts += 1
     db.session.commit()
 
-    if not check_password_hash(record.otp_hash, otp):
-        return jsonify({"msg": "Invalid or expired OTP."}), 400
+    provider_type = os.environ.get("SMS_PROVIDER", "MOCK").upper().strip()
+    if provider_type == "MSG91" and phone != "7777777777":
+        from sms_provider import MSG91OTPService
+        if not MSG91OTPService.verify_otp(phone, otp):
+            return jsonify({"msg": "Invalid or expired OTP."}), 400
+    else:
+        if not check_password_hash(record.otp_hash, otp):
+            return jsonify({"msg": "Invalid or expired OTP."}), 400
 
     # Generate a secure single-use recovery token
     reset_token = secrets.token_hex(32)
