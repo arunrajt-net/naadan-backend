@@ -140,11 +140,18 @@ Generated automatically after database migration and historical backfill executi
 * **Notification Count:** {stats_before.get('notification', 0)} before vs {stats_after.get('notification', 0)} after
 """
     
-    # Write report as artifact
+    # Write report as artifact if the folder exists (running locally)
     brain_report_path = r"C:\Users\arunr\.gemini\antigravity\brain\04516b75-275a-40ca-a623-8a6d25fb5647\post_migration_verification.md"
-    with open(brain_report_path, "w", encoding="utf-8") as f:
-        f.write(report)
-    print(f"[MIGRATION] Post-migration report generated at {brain_report_path}")
+    dir_name = os.path.dirname(brain_report_path)
+    if os.path.exists(dir_name):
+        try:
+            with open(brain_report_path, "w", encoding="utf-8") as f:
+                f.write(report)
+            print(f"[MIGRATION] Post-migration report generated at {brain_report_path}")
+        except Exception as e:
+            print(f"[MIGRATION WARNING] Failed to write post-migration report: {e}")
+    else:
+        print("[MIGRATION] Post-migration report writing skipped (non-local environment).")
 
 
 def start_weekly_backup_verifier(app):
