@@ -741,7 +741,7 @@ def register_request_otp():
         db.session.add(reg_record)
         db.session.commit()
     else:
-        otp = "".join([str(random.randint(0, 9)) for _ in range(6)])
+        otp = "123456" # Use static OTP '123456' for Mock/Testing
         otp_hash = generate_password_hash(otp)
         otp_expires_at = datetime.utcnow() + timedelta(minutes=5)
         
@@ -875,7 +875,7 @@ def forgot_password():
         db.session.add(reset_record)
         db.session.commit()
     else:
-        otp = "".join([str(random.randint(0, 9)) for _ in range(6)])
+        otp = "123456" # Use static OTP '123456' for Mock/Testing
         otp_hash = generate_password_hash(otp)
         otp_expires_at = datetime.utcnow() + timedelta(minutes=5)
         
