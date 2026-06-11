@@ -20,6 +20,36 @@ def calculate_haversine(lat1, lon1, lat2, lon2):
 
 auth_bp = Blueprint('auth_bp', __name__)
 
+def init_firebase_admin():
+    import firebase_admin
+    from firebase_admin import credentials
+    import json
+    import os
+    if not firebase_admin._apps:
+        service_account_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
+        if service_account_json:
+            try:
+                cleaned_json = service_account_json.strip()
+                if cleaned_json.startswith("'") and cleaned_json.endswith("'"):
+                    cleaned_json = cleaned_json[1:-1]
+                elif cleaned_json.startswith('"') and cleaned_json.endswith('"'):
+                    cleaned_json = cleaned_json[1:-1]
+                cred_dict = json.loads(cleaned_json)
+                cred = credentials.Certificate(cred_dict)
+                firebase_admin.initialize_app(cred)
+                print("[FIREBASE] Initialized Firebase Admin SDK with Service Account JSON.")
+                return True
+            except Exception as e:
+                print(f"[FIREBASE ERROR] Failed to initialize Firebase Admin SDK with Service Account JSON: {e}")
+        try:
+            firebase_admin.initialize_app(options={'projectId': 'naadan-ebd6e'})
+            print("[FIREBASE] Initialized Firebase Admin SDK with project ID option.")
+            return True
+        except Exception as e:
+            print(f"[FIREBASE ERROR] Failed to initialize default Firebase Admin SDK: {e}")
+            return False
+    return True
+
 def log_audit_event(user_id, action, details):
     try:
         event = AuditEvent(user_id=user_id, action=action, details=details)
@@ -986,13 +1016,7 @@ def reset_password():
     import firebase_admin
     from firebase_admin import auth as admin_auth
     
-    firebase_configured = True
-    try:
-        if not firebase_admin._apps:
-            firebase_admin.initialize_app()
-    except Exception as e:
-        print("Firebase Admin SDK initialization skipped/failed, using local dev mock mode:", str(e))
-        firebase_configured = False
+    firebase_configured = init_firebase_admin()
 
     # Perform credentials update
     if firebase_configured:
@@ -1040,6 +1064,8 @@ def reset_password_firebase():
     if not phone or not new_password or not firebase_id_token:
         return jsonify({'msg': 'Missing required fields.'}), 400
 
+    clean_phone = phone[-10:] if len(phone) >= 10 else phone
+
     # Validate password strength
     if not re.match(r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$', new_password):
         return jsonify({'msg': 'Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, and one number.'}), 400
@@ -1054,7 +1080,7 @@ def reset_password_firebase():
             audience='naadan-ebd6e'
         )
         token_phone = decoded_token.get('phone_number', '')  # e.g. '+919497856550'
-        expected_phone = '+91' + phone
+        expected_phone = '+91' + clean_phone
         if token_phone != expected_phone:
             return jsonify({'msg': 'Phone verification mismatch. Please try again.'}), 400
     except Exception as e:
@@ -1062,7 +1088,7 @@ def reset_password_firebase():
         return jsonify({'msg': 'OTP verification failed or expired. Please try again.'}), 401
 
     # Find user in DB by phone number
-    user = User.query.filter_by(phone=phone).first()
+    user = User.query.filter_by(phone=clean_phone).first()
     if not user:
         return jsonify({'msg': 'No account found with this phone number.'}), 404
 
@@ -1071,21 +1097,27 @@ def reset_password_firebase():
     db.session.commit()
 
     # Try to update Firebase password (best-effort)
-    try:
-        dummy_email = f'{phone}@naadan.com'
+    firebase_configured = init_firebase_admin()
+    if firebase_configured:
         try:
-            fb_user = admin_auth.get_user_by_email(dummy_email)
-        except Exception:
-            fb_user = None
-        if fb_user:
-            admin_auth.update_user(fb_user.uid, password=new_password)
-            admin_auth.revoke_refresh_tokens(fb_user.uid)
-            print(f"[FIREBASE] Password updated for {fb_user.uid}")
-    except Exception as fb_err:
-        print(f"[FIREBASE FALLBACK] Could not update Firebase password: {fb_err}")
+            dummy_email = f'{clean_phone}@naadan.com'
+            try:
+                fb_user = admin_auth.get_user_by_email(dummy_email)
+            except Exception:
+                fb_user = None
+            if fb_user:
+                admin_auth.update_user(fb_user.uid, password=new_password)
+                admin_auth.revoke_refresh_tokens(fb_user.uid)
+                print(f"[FIREBASE] Password updated for {fb_user.uid}")
+            else:
+                print(f"[FIREBASE WARNING] User {dummy_email} not found in Firebase Auth.")
+        except Exception as fb_err:
+            print(f"[FIREBASE ERROR] Could not update Firebase password: {fb_err}")
+    else:
+        print("[FIREBASE FALLBACK] Skipping Firebase update, SDK not configured.")
 
     # Audit log
-    log_audit_event(user.id, 'Password Reset Complete (Firebase OTP)', f'Password reset via Firebase Phone OTP for {phone}.')
+    log_audit_event(user.id, 'Password Reset Complete (Firebase OTP)', f'Password reset via Firebase Phone OTP for {clean_phone}.')
 
     return jsonify({'msg': 'Password updated successfully.'}), 200
 
@@ -1173,13 +1205,7 @@ def register_firebase():
     uid = None
     
     # Initialize Admin SDK on-demand
-    firebase_configured = True
-    try:
-        if not firebase_admin._apps:
-            firebase_admin.initialize_app(options={'projectId': 'naadan-ebd6e'})
-    except Exception as e:
-        print("Firebase Admin SDK initialization skipped/failed, using local dev mock mode:", str(e))
-        firebase_configured = False
+    firebase_configured = init_firebase_admin()
 
     if firebase_configured:
         try:
