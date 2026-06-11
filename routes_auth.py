@@ -1080,3 +1080,25 @@ def reset_password_firebase():
     log_audit_event(user.id, 'Password Reset Complete (Firebase OTP)', f'Password reset via Firebase Phone OTP for {phone}.')
 
     return jsonify({'msg': 'Password updated successfully.'}), 200
+
+
+@auth_bp.route('/debug-sms-logs', methods=['GET'])
+def get_debug_sms_logs():
+    from models import SMSAuditLog
+    logs = SMSAuditLog.query.order_by(SMSAuditLog.created_at.desc()).limit(20).all()
+    res = []
+    for l in logs:
+        res.append({
+            "id": l.id,
+            "phone": l.phone,
+            "event_type": l.event_type,
+            "provider": l.provider,
+            "template_id": l.template_id,
+            "message_content": l.message_content,
+            "provider_reference": l.provider_reference,
+            "delivery_status": l.delivery_status,
+            "error_message": l.error_message,
+            "created_at": l.created_at.isoformat() if l.created_at else ""
+        })
+    return jsonify(res), 200
+
