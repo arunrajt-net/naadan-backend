@@ -50,6 +50,31 @@ def init_firebase_admin():
             return False
     return True
 
+def user_to_dict(user):
+    return {
+        "id": user.id,
+        "name": user.name, 
+        "email": user.email,
+        "role": user.role, 
+        "phone": user.phone, 
+        "lat": user.lat, 
+        "lng": user.lng,
+        "delivery_available": bool(user.delivery_available) if user.delivery_available is not None else False,
+        "delivery_price_per_km": float(user.delivery_price_per_km or 0.0),
+        "is_verified": bool(user.is_verified),
+        "verification_status": user.verification_status or "NONE",
+        "upi_id": user.upi_id or (user.phone + "@upi" if user.phone else ""),
+        "farm_name": user.farm_name or user.name,
+        "aadhaar_number": user.aadhaar_number,
+        "panchayat_id": user.panchayat_id,
+        "is_buyer": bool(user.is_buyer),
+        "is_farmer": bool(user.is_farmer),
+        "is_admin": bool(user.is_admin),
+        "location_privacy": user.location_privacy or "public",
+        "pickup_instructions": user.pickup_instructions,
+        "pickup_landmark": user.pickup_landmark
+    }
+
 def log_audit_event(user_id, action, details):
     try:
         event = AuditEvent(user_id=user_id, action=action, details=details)
@@ -266,29 +291,7 @@ def sync_user():
             return jsonify({
                 "msg": "User synced",
                 "status": "exists",
-                "user": {
-                    "id": user.id,
-                    "name": user.name, 
-                    "email": user.email,
-                    "role": user.role, 
-                    "phone": user.phone, 
-                    "lat": user.lat, 
-                    "lng": user.lng,
-                    "delivery_available": bool(user.delivery_available) if user.delivery_available is not None else False,
-                    "delivery_price_per_km": float(user.delivery_price_per_km or 0.0),
-                    "is_verified": bool(user.is_verified),
-                    "verification_status": user.verification_status,
-                    "upi_id": user.upi_id or (user.phone + "@upi" if user.phone else ""),
-                    "farm_name": user.farm_name or user.name,
-                    "aadhaar_number": user.aadhaar_number,
-                    "panchayat_id": user.panchayat_id,
-                    "is_buyer": bool(user.is_buyer),
-                    "is_farmer": bool(user.is_farmer),
-                    "is_admin": bool(user.is_admin),
-                    "location_privacy": user.location_privacy,
-                    "pickup_instructions": user.pickup_instructions,
-                    "pickup_landmark": user.pickup_landmark
-                }
+                "user": user_to_dict(user)
             }), 200
         else:
             # Create new user
@@ -362,25 +365,7 @@ def sync_user():
             return jsonify({
                 "msg": "User synced and created",
                 "status": "created",
-                "user": {
-                    "id": new_user.id,
-                    "name": new_user.name, 
-                    "email": new_user.email,
-                    "role": new_user.role, 
-                    "phone": new_user.phone, 
-                    "lat": new_user.lat, 
-                    "lng": new_user.lng,
-                    "delivery_available": bool(new_user.delivery_available) if new_user.delivery_available is not None else False,
-                    "delivery_price_per_km": float(new_user.delivery_price_per_km or 0.0),
-                    "is_verified": False,
-                    "verification_status": 'NONE',
-                    "is_buyer": bool(new_user.is_buyer),
-                    "is_farmer": bool(new_user.is_farmer),
-                    "is_admin": bool(new_user.is_admin),
-                    "location_privacy": new_user.location_privacy,
-                    "pickup_instructions": new_user.pickup_instructions,
-                    "pickup_landmark": new_user.pickup_landmark
-                }
+                "user": user_to_dict(new_user)
             }), 201
 
     except Exception as e:
@@ -433,29 +418,7 @@ def link_accounts():
         
         return jsonify({
             "msg": "Accounts linked successfully!",
-            "user": {
-                "id": user.id,
-                "name": user.name, 
-                "email": user.email,
-                "role": user.role, 
-                "phone": user.phone, 
-                "lat": user.lat, 
-                "lng": user.lng,
-                "delivery_available": bool(user.delivery_available) if user.delivery_available is not None else False,
-                "delivery_price_per_km": float(user.delivery_price_per_km or 0.0),
-                "is_verified": bool(user.is_verified),
-                "verification_status": user.verification_status,
-                "upi_id": user.upi_id or (user.phone + "@upi" if user.phone else ""),
-                "farm_name": user.farm_name or user.name,
-                "aadhaar_number": user.aadhaar_number,
-                "panchayat_id": user.panchayat_id,
-                "is_buyer": bool(user.is_buyer),
-                "is_farmer": bool(user.is_farmer),
-                "is_admin": bool(user.is_admin),
-                "location_privacy": user.location_privacy,
-                "pickup_instructions": user.pickup_instructions,
-                "pickup_landmark": user.pickup_landmark
-            }
+            "user": user_to_dict(user)
         }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 400
@@ -495,29 +458,7 @@ def enable_role(current_user):
     
     return jsonify({
         "msg": f"Role {role_to_enable} enabled",
-        "user": {
-            "id": current_user.id,
-            "name": current_user.name, 
-            "email": current_user.email,
-            "role": current_user.role, 
-            "phone": current_user.phone, 
-            "lat": current_user.lat, 
-            "lng": current_user.lng,
-            "delivery_available": bool(current_user.delivery_available) if current_user.delivery_available is not None else False,
-            "delivery_price_per_km": float(current_user.delivery_price_per_km or 0.0),
-            "is_verified": bool(current_user.is_verified),
-            "verification_status": current_user.verification_status,
-            "upi_id": current_user.upi_id or (current_user.phone + "@upi" if current_user.phone else ""),
-            "farm_name": current_user.farm_name or current_user.name,
-            "aadhaar_number": current_user.aadhaar_number,
-            "panchayat_id": current_user.panchayat_id,
-            "is_farmer": bool(current_user.is_farmer),
-            "is_buyer": bool(current_user.is_buyer),
-            "is_admin": bool(current_user.is_admin),
-            "location_privacy": current_user.location_privacy,
-            "pickup_instructions": current_user.pickup_instructions,
-            "pickup_landmark": current_user.pickup_landmark
-        }
+        "user": user_to_dict(current_user)
     }), 200
 
 
