@@ -193,7 +193,7 @@ def create_order(current_user):
         total_price = product.price * qty
 
         initial_status = 'Waiting Farmer Confirmation' if payment_method == 'COD' else 'Pending Payment'
-        payment_status = 'COD' if payment_method == 'COD' else 'Unpaid'
+        payment_status = 'COD' if payment_method == 'COD' else 'PENDING_PAYMENT'
 
         new_order = Order(
             buyer_id=current_user.id,
@@ -456,7 +456,7 @@ def get_order_detail(order_id, current_user):
         "farmer_name": farmer_name,
         "farm_name": farm_name,
         "farmer_phone": farmer.phone if farmer else "",
-        "farmer_upi_id": (farmer.upi_id or (farmer.phone + "@upi" if farmer.phone else "")) if farmer else "",
+        "farmer_upi_id": farmer.upi_id if farmer else "",
         "farmer_lat": farmer_lat,
         "farmer_lng": farmer_lng,
         "buyer_name": buyer_name,
@@ -514,7 +514,9 @@ def get_farmer_orders(current_user):
             "delivered_at": o.delivered_at.isoformat() if o.delivered_at else None,
             "completed_at": o.completed_at.isoformat() if o.completed_at else None,
             "completed_by": o.completed_by,
-            "completion_reason": o.completion_reason
+            "completion_reason": o.completion_reason,
+            "payment_screenshot_url": o.payment_screenshot_url,
+            "utr_number": o.utr_number
         })
     return jsonify(res), 200
 
@@ -637,3 +639,168 @@ def clear_notifications(current_user):
     Notification.query.filter_by(user_id=current_user.id).delete()
     db.session.commit()
     return jsonify({"msg": "Notifications cleared"}), 200
+
+# ================================================================
+# DIRECT UPI PAYMENT PROOF SUBMISSION & VERIFICATION ROUTING
+# ================================================================
+
+@orders_bp.route('/<int:order_id>/submit-proof', methods=['POST'])
+@firebase_required()
+def submit_proof(order_id, current_user):
+    import os
+    import uuid
+    
+    order = Order.query.get(order_id)
+    if not order:
+        return jsonify({"msg": "Order not found"}), 404
+        
+    if order.buyer_id != current_user.id:
+        log_audit_event(current_user.id, "Permission Denied", f"Tried to submit proof for order {order_id} belonging to buyer {order.buyer_id}")
+        return jsonify({"msg": "Unauthorized. You are not the buyer of this order."}), 403
+        
+    if order.payment_status not in ['PENDING_PAYMENT', 'PAYMENT_REJECTED', 'Unpaid', None]:
+        return jsonify({"msg": f"Payment proof cannot be submitted. Current status is {order.payment_status}."}), 400
+        
+    screenshot_url = (request.json.get('screenshot_url') if (request.is_json and request.json) else None) or request.form.get('screenshot_url')
+    utr_number = ((request.json.get('utr_number') if (request.is_json and request.json) else None) or request.form.get('utr_number', '')).strip()
+    
+    if screenshot_url:
+        order.payment_screenshot_url = screenshot_url
+    else:
+        if 'screenshot' not in request.files:
+            return jsonify({"msg": "Screenshot file or URL is mandatory."}), 400
+            
+        file = request.files['screenshot']
+        if not file or not file.filename:
+            return jsonify({"msg": "Screenshot file or URL is mandatory."}), 400
+            
+        ext = os.path.splitext(file.filename)[1].lower()
+        if ext not in ['.jpg', '.jpeg', '.png']:
+            return jsonify({"msg": "Only JPG, JPEG, and PNG images are allowed."}), 400
+            
+        # Enforce size limit check (< 5 MB)
+        file.seek(0, os.SEEK_END)
+        size = file.tell()
+        file.seek(0) # reset file cursor
+        if size > 5 * 1024 * 1024:
+            return jsonify({"msg": "File size exceeds maximum limit of 5 MB."}), 400
+            
+        proof_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "backend", "uploads", "payment_proofs")
+        os.makedirs(proof_dir, exist_ok=True)
+        
+        fname = f"order_{order.id}_{uuid.uuid4().hex[:10]}{ext}"
+        fpath = os.path.join(proof_dir, fname)
+        file.save(fpath)
+        order.payment_screenshot_url = f"payment_proofs/{fname}"
+    order.utr_number = utr_number
+    order.upi_ref = utr_number # sync with existing ref for backward compat
+    order.payment_status = 'PAYMENT_SUBMITTED'
+    order.status = 'Waiting Farmer Confirmation'
+    order.payment_rejection_reason = None # clear any prior rejection
+    
+    db.session.commit()
+    
+    log_audit_event(current_user.id, "Payment Proof Submitted", f"Submitted proof for order {order.id} with UTR: {utr_number}")
+    
+    # Send notification to assigned farmer
+    create_notification(
+        order.farmer_id,
+        'warning',
+        f"New payment submitted for Order #{order.id}. Please verify payment before confirming.",
+        order.id
+    )
+    
+    # Send SMS alert to farmer if they have phone
+    try:
+        farmer = User.query.get(order.farmer_id)
+        if farmer and farmer.phone:
+            from sms_provider import get_sms_provider
+            sms_text = f"New payment proof submitted for order #{order.id} on Naadan. Please verify."
+            get_sms_provider().send_sms(
+                phone=farmer.phone,
+                event_type="NEW_ORDER_ALERT",
+                message_text=sms_text,
+                template_id=os.environ.get("MSG91_ORDER_TEMPLATE_ID", "").strip(),
+                user_id=farmer.id
+            )
+    except Exception as sms_err:
+        print(f"[PROOF SMS ERROR] Failed to notify farmer: {sms_err}")
+        
+    return jsonify({
+        "msg": "Your payment proof has been submitted successfully. The farmer will verify the payment and confirm the order.",
+        "status": order.status,
+        "payment_status": order.payment_status,
+        "payment_screenshot_url": order.payment_screenshot_url,
+        "utr_number": order.utr_number
+    }), 200
+
+@orders_bp.route('/<int:order_id>/verify-payment', methods=['POST'])
+@firebase_required()
+def verify_payment(order_id, current_user):
+    order = Order.query.get(order_id)
+    if not order:
+        return jsonify({"msg": "Order not found"}), 404
+        
+    if order.farmer_id != current_user.id:
+        log_audit_event(current_user.id, "Permission Denied", f"Tried to verify payment of order {order_id} belonging to farmer {order.farmer_id}")
+        return jsonify({"msg": "Only the assigned farmer can verify this payment."}), 403
+        
+    if order.status != 'Waiting Farmer Confirmation':
+        return jsonify({"msg": f"Order payment cannot be verified from status: {order.status}."}), 400
+        
+    data = request.get_json() or {}
+    action = data.get('action', '').upper().strip()
+    
+    if action == 'APPROVE':
+        order.payment_status = 'PAYMENT_CONFIRMED'
+        order.status = 'Accepted'
+        order.payment_verified_at = datetime.utcnow()
+        order.payment_verified_by = current_user.name
+        
+        db.session.commit()
+        log_audit_event(current_user.id, "Order Confirmed", f"Farmer confirmed payment/order {order.id}")
+        
+        # Notify buyer
+        create_notification(
+            order.buyer_id,
+            'success',
+            f"Your payment has been verified and your order #{order.id} is confirmed.",
+            order.id
+        )
+        
+        return jsonify({
+            "msg": "Payment verified! Order is now Confirmed/Accepted.",
+            "status": order.status,
+            "payment_status": order.payment_status
+        }), 200
+        
+    elif action == 'REJECT':
+        reason = data.get('rejection_reason', '').strip()
+        valid_reasons = ["No payment received", "Wrong amount paid", "Invalid screenshot", "UTR mismatch", "Other"]
+        if reason not in valid_reasons:
+            reason = "Other"
+            
+        order.payment_status = 'PAYMENT_REJECTED'
+        order.status = 'Pending Payment'
+        order.payment_rejection_reason = reason
+        
+        db.session.commit()
+        log_audit_event(current_user.id, "Payment Rejected", f"Farmer rejected payment for order {order.id} due to: {reason}")
+        
+        # Notify buyer
+        create_notification(
+            order.buyer_id,
+            'error',
+            f"Payment verification failed for order #{order.id}. Reason: {reason}. Please submit correct proof or contact the farmer.",
+            order.id
+        )
+        
+        return jsonify({
+            "msg": "Payment rejected. Customer will be notified to re-upload proof.",
+            "status": order.status,
+            "payment_status": order.payment_status,
+            "payment_rejection_reason": order.payment_rejection_reason
+        }), 200
+        
+    else:
+        return jsonify({"msg": "Invalid action. Use APPROVE or REJECT."}), 400

@@ -33,6 +33,23 @@ def add_product(current_user):
         log_audit_event(user.id, "Permission Denied", "Attempted to add product without is_farmer flag")
         return jsonify({"msg": "Only farmers can add products"}), 403
 
+    # Enforce Farmer Setup Guard (UPI ID, Location, Landmark)
+    import re
+    upi_id = (user.upi_id or "").strip()
+    upi_regex = r'^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$'
+    
+    errors = []
+    if not upi_id or not re.match(upi_regex, upi_id):
+        errors.append("UPI ID Missing or Invalid")
+    if user.lat is None or user.lng is None or (user.lat == 10.0 and user.lng == 76.0):
+        errors.append("GPS Location Not Configured")
+    if not (user.pickup_landmark or "").strip():
+        errors.append("Pickup Landmark Missing")
+        
+    if errors:
+        msg = "Farmer setup incomplete: " + ", ".join(errors) + ". Complete missing fields before listing harvest."
+        return jsonify({"msg": msg, "errors": errors}), 400
+
     data = request.get_json() or {}
 
     # Validate Price and Quantity

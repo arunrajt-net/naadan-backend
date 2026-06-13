@@ -151,4 +151,31 @@ def get_sms_stats(current_user):
         "estimated_cost": estimated_cost
     }), 200
 
+@admin_bp.route('/payments', methods=['GET'])
+@firebase_required()
+def get_payments(current_user):
+    if not current_user.is_admin:
+        return jsonify({"msg": "Forbidden. Admin capability required."}), 403
+        
+    orders = Order.query.filter((Order.payment_method == 'UPI') | (Order.payment_screenshot_url != None)).order_by(Order.created_at.desc()).all()
+    res = []
+    for o in orders:
+        buyer = User.query.get(o.buyer_id)
+        farmer = User.query.get(o.farmer_id)
+        res.append({
+            "id": o.id,
+            "buyer_name": buyer.name if buyer else "Unknown Buyer",
+            "farmer_name": farmer.name if farmer else "Unknown Farmer",
+            "total_price": o.total_price,
+            "status": o.status,
+            "payment_status": o.payment_status,
+            "payment_screenshot_url": o.payment_screenshot_url,
+            "utr_number": o.utr_number,
+            "payment_verified_at": o.payment_verified_at.isoformat() if o.payment_verified_at else None,
+            "payment_verified_by": o.payment_verified_by,
+            "payment_rejection_reason": o.payment_rejection_reason,
+            "created_at": o.created_at.isoformat() if o.created_at else None
+        })
+    return jsonify(res), 200
+
 

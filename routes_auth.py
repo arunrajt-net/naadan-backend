@@ -63,7 +63,7 @@ def user_to_dict(user):
         "delivery_price_per_km": float(user.delivery_price_per_km or 0.0),
         "is_verified": bool(user.is_verified),
         "verification_status": user.verification_status or "NONE",
-        "upi_id": user.upi_id or (user.phone + "@upi" if user.phone else ""),
+        "upi_id": user.upi_id,
         "farm_name": user.farm_name or user.name,
         "aadhaar_number": user.aadhaar_number,
         "panchayat_id": user.panchayat_id,
@@ -206,8 +206,6 @@ def sync_user():
                 if gps_acc is not None:
                     try:
                         gps_acc_f = float(gps_acc)
-                        if gps_acc_f > 100.0:
-                            return jsonify({"error": "GPS accuracy is too low (must be within 100 meters)."}), 400
                     except (ValueError, TypeError):
                         pass
 
@@ -275,7 +273,11 @@ def sync_user():
             user.delivery_available = deliv_avail
             user.delivery_price_per_km = deliv_price
             if 'upi_id' in data and data.get('upi_id'):
-                user.upi_id = data.get('upi_id').strip()
+                upi_val = data.get('upi_id').strip()
+                import re
+                if upi_val and not re.match(r'^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$', upi_val):
+                    return jsonify({"error": "Invalid UPI ID format. It should follow the format: username@bank"}), 400
+                user.upi_id = upi_val
             if 'farm_name' in data and data.get('farm_name'):
                 user.farm_name = data.get('farm_name').strip()
             if 'location_privacy' in data:

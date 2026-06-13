@@ -221,7 +221,13 @@ def create_app():
     if os.environ.get('TESTING') == 'true':
         app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'test_naadan.db') + '?timeout=30'
     else:
-        app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'naadan.db') + '?timeout=30'
+        db_url = os.environ.get('DATABASE_URL')
+        if db_url:
+            if db_url.startswith("postgres://"):
+                db_url = db_url.replace("postgres://", "postgresql://", 1)
+            app.config['SQLALCHEMY_DATABASE_URI'] = db_url
+        else:
+            app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'naadan.db') + '?timeout=30'
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
     db.init_app(app)
@@ -262,6 +268,11 @@ def create_app():
 
         # Run SQLite migrations for columns if they do not exist
         migrations = [
+            'ALTER TABLE "order" ADD COLUMN payment_screenshot_url VARCHAR(255)',
+            'ALTER TABLE "order" ADD COLUMN utr_number VARCHAR(100)',
+            'ALTER TABLE "order" ADD COLUMN payment_verified_at DATETIME',
+            'ALTER TABLE "order" ADD COLUMN payment_verified_by VARCHAR(100)',
+            'ALTER TABLE "order" ADD COLUMN payment_rejection_reason VARCHAR(255)',
             'ALTER TABLE "user" ADD COLUMN gps_accuracy FLOAT',
             'ALTER TABLE "user" ADD COLUMN location_last_updated DATETIME',
             'ALTER TABLE "user" ADD COLUMN pickup_landmark VARCHAR(150)',
@@ -369,6 +380,11 @@ def create_app():
     @app.route('/api/health', methods=['GET'])
     def health_check():
         return jsonify({"status": "healthy"}), 200
+
+    @app.route('/api/uploads/<path:filename>', methods=['GET'])
+    def serve_upload(filename):
+        from flask import send_from_directory
+        return send_from_directory(os.path.join(basedir, 'uploads'), filename)
 
     # Register Blueprints
     from routes_auth import auth_bp
