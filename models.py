@@ -16,7 +16,7 @@ class User(db.Model):
     is_farmer = db.Column(db.Boolean, default=False, nullable=False)
     is_admin = db.Column(db.Boolean, default=False, nullable=False)
     __table_args__ = (
-        db.CheckConstraint('delivery_available = 1 OR delivery_price_per_km = 0.0', name='check_delivery_price_when_unavailable'),
+        db.CheckConstraint('delivery_available OR delivery_price_per_km = 0.0', name='check_delivery_price_when_unavailable'),
     )
 
     lat = db.Column(db.Float, nullable=True)
