@@ -161,7 +161,8 @@ def create_order(current_user):
     expire_abandoned_reservations()
     auto_complete_delivered_orders()
 
-    db.session.execute(text('BEGIN IMMEDIATE'))
+    if db.engine.dialect.name == 'sqlite':
+        db.session.execute(text('BEGIN IMMEDIATE'))
     try:
         product_id = data.get('product_id')
         qty_raw = data.get('quantity_ordered') or data.get('quantity') or 1
