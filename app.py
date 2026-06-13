@@ -233,18 +233,27 @@ def create_app():
     db.init_app(app)
     
     with app.app_context():
-        # A. Database Integrity Check
-        try:
-            res = db.session.execute(db.text("PRAGMA integrity_check;")).scalar()
-            if res != "ok":
-                print(f"[FATAL ERROR] Database integrity check failed! Result: {res}")
+        db_uri = app.config['SQLALCHEMY_DATABASE_URI']
+        if db_uri.startswith('sqlite:///'):
+            try:
+                res = db.session.execute(db.text("PRAGMA integrity_check;")).scalar()
+                if res != "ok":
+                    print(f"[FATAL ERROR] Database integrity check failed! Result: {res}")
+                    import sys
+                    sys.exit(1)
+                print("[INTEGRITY CHECK] SQLite database is OK.")
+            except Exception as e:
+                print(f"[FATAL ERROR] Could not perform database integrity check: {str(e)}")
                 import sys
                 sys.exit(1)
-            print("[INTEGRITY CHECK] Database is OK.")
-        except Exception as e:
-            print(f"[FATAL ERROR] Could not perform database integrity check: {str(e)}")
-            import sys
-            sys.exit(1)
+        else:
+            try:
+                db.session.execute(db.text("SELECT 1")).scalar()
+                print("[INTEGRITY CHECK] PostgreSQL connection verified successfully.")
+            except Exception as e:
+                print(f"[FATAL ERROR] Could not connect to PostgreSQL database: {str(e)}")
+                import sys
+                sys.exit(1)
 
         # B. Database Backup Prior to Migration
         db_uri = app.config['SQLALCHEMY_DATABASE_URI']
@@ -350,15 +359,14 @@ def create_app():
                 db.session.rollback()
         db.create_all()
         
-        # Initialize roles for existing users
         try:
             # If they don't have roles enabled yet, initialize them
             # For farmers: is_farmer = 1, is_buyer = 0
-            db.session.execute(db.text('UPDATE "user" SET is_farmer = 1 WHERE role = "farmer" AND is_farmer = 0 AND is_buyer = 0'))
+            db.session.execute(db.text("UPDATE \"user\" SET is_farmer = True WHERE role = 'farmer' AND is_farmer = False AND is_buyer = False"))
             # For buyers: is_buyer = 1, is_farmer = 0
-            db.session.execute(db.text('UPDATE "user" SET is_buyer = 1 WHERE role = "buyer" AND is_buyer = 0 AND is_farmer = 0'))
+            db.session.execute(db.text("UPDATE \"user\" SET is_buyer = True WHERE role = 'buyer' AND is_buyer = False AND is_farmer = False"))
             # For admins: is_admin = 1
-            db.session.execute(db.text('UPDATE "user" SET is_admin = 1 WHERE role = "admin" AND is_admin = 0'))
+            db.session.execute(db.text("UPDATE \"user\" SET is_admin = True WHERE role = 'admin' AND is_admin = False"))
             db.session.commit()
             print("[MIGRATION] User role flags initialized successfully!")
         except Exception as role_mig_err:
