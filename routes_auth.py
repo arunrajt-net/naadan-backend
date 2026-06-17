@@ -280,20 +280,21 @@ def sync_user():
                 if new_pm not in ['UPI_ONLY', 'COD_ONLY', 'BOTH', None, '']:
                     return jsonify({"error": "Invalid payment_methods value. Must be UPI_ONLY, COD_ONLY, or BOTH."}), 400
                 
-                # Check active orders
-                from models import Order
-                active_order_statuses = [
-                    'Pending Payment', 'Pending', 'PENDING',
-                    'Waiting Farmer Confirmation',
-                    'Accepted', 'Packed', 'Out For Delivery', 'Waiting Customer Confirmation',
-                    'COD_PENDING', 'COD_ACCEPTED', 'Disputed'
-                ]
-                active_orders_count = Order.query.filter(
-                    Order.farmer_id == user.id,
-                    Order.status.in_(active_order_statuses)
-                ).count()
-                if active_orders_count > 0:
-                    return jsonify({"error": "You cannot change payment methods while active orders are in progress."}), 400
+                # Check active orders only if they already had a payment method set
+                if user.payment_methods is not None:
+                    from models import Order
+                    active_order_statuses = [
+                        'Pending Payment', 'Pending', 'PENDING',
+                        'Waiting Farmer Confirmation',
+                        'Accepted', 'Packed', 'Out For Delivery', 'Waiting Customer Confirmation',
+                        'COD_PENDING', 'COD_ACCEPTED', 'Disputed'
+                    ]
+                    active_orders_count = Order.query.filter(
+                        Order.farmer_id == user.id,
+                        Order.status.in_(active_order_statuses)
+                    ).count()
+                    if active_orders_count > 0:
+                        return jsonify({"error": "You cannot change payment methods while active orders are in progress."}), 400
                 
                 user.payment_methods = new_pm if new_pm else None
 
