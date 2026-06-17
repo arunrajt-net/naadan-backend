@@ -1237,4 +1237,22 @@ def register_firebase():
     log_audit_event(new_user.id, "User Registered (Firebase Phone)", f"Registered via Firebase Phone OTP verification.")
     return jsonify({"msg": "Registration successful."}), 200
 
+@auth_bp.route('/temp_debug_orders', methods=['GET'])
+def temp_debug_orders():
+    from models import Order, User
+    res = []
+    for o in Order.query.all():
+        farmer = User.query.get(o.farmer_id)
+        buyer = User.query.get(o.buyer_id)
+        res.append({
+            "order_id": o.id,
+            "farmer_name": farmer.name if farmer else "Unknown",
+            "farmer_id": o.farmer_id,
+            "buyer_name": buyer.name if buyer else "Unknown",
+            "status": o.status,
+            "payment_status": o.payment_status,
+            "payment_method": o.payment_method
+        })
+    return jsonify(res), 200
+
 
