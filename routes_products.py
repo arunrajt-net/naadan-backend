@@ -39,8 +39,10 @@ def add_product(current_user):
     upi_regex = r'^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$'
     
     errors = []
-    if not upi_id or not re.match(upi_regex, upi_id):
-        errors.append("UPI ID Missing or Invalid")
+    # Only require UPI ID if farmer accepted payment methods include UPI (UPI_ONLY or BOTH or not configured yet)
+    if user.payment_methods != 'COD_ONLY':
+        if not upi_id or not re.match(upi_regex, upi_id):
+            errors.append("UPI ID Missing or Invalid")
     if user.lat is None or user.lng is None or (user.lat == 10.0 and user.lng == 76.0):
         errors.append("GPS Location Not Configured")
     if not (user.pickup_landmark or "").strip():
