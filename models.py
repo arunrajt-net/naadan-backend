@@ -157,6 +157,7 @@ class Product(db.Model):
     lat = db.Column(db.Float, nullable=True)
     lng = db.Column(db.Float, nullable=True)
     is_available = db.Column(db.Boolean, default=True)
+    is_deleted = db.Column(db.Boolean, default=False, nullable=False, server_default='0')
     delivery_type = db.Column(db.String(20), default="both")  # pickup, delivery, both
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     reserved_quantity = db.Column(db.Float, default=0.0)

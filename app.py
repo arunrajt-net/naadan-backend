@@ -349,7 +349,8 @@ def create_app():
             'ALTER TABLE "user" ADD COLUMN location_privacy VARCHAR(20) DEFAULT "public"',
             'ALTER TABLE "user" ADD COLUMN pickup_instructions TEXT',
             'CREATE TABLE IF NOT EXISTS password_reset (id INTEGER PRIMARY KEY AUTOINCREMENT, phone VARCHAR(20) NOT NULL, otp_hash VARCHAR(100) NOT NULL, otp_expires_at DATETIME NOT NULL, verification_attempts INTEGER DEFAULT 0 NOT NULL, reset_token VARCHAR(255), token_expires_at DATETIME, is_used BOOLEAN DEFAULT 0 NOT NULL, created_at DATETIME NOT NULL)',
-            'ALTER TABLE "user" ADD COLUMN payment_methods VARCHAR(20) DEFAULT NULL'
+            'ALTER TABLE "user" ADD COLUMN payment_methods VARCHAR(20) DEFAULT NULL',
+            'ALTER TABLE "product" ADD COLUMN is_deleted BOOLEAN DEFAULT 0'
         ]
         
         for mig in migrations:

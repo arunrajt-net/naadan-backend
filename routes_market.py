@@ -429,7 +429,7 @@ def get_farmer_performance(current_user):
     monthly_qty_sold = sum(o.quantity_ordered for o in monthly_orders)
     
     # Remaining inventory (available stock across active farmer products)
-    farmer_products = Product.query.filter_by(farmer_id=current_user.id).all()
+    farmer_products = Product.query.filter_by(farmer_id=current_user.id, is_deleted=False).all()
     remaining_inventory = sum(p.available_stock for p in farmer_products)
     
     # Top Performing Crops (group by product name from completed orders)

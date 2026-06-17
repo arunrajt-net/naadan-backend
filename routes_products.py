@@ -125,7 +125,7 @@ def get_farmer_products(current_user):
         return jsonify({"msg": "Forbidden. Farmer capability required."}), 403
         
     user_id = current_user.id
-    products = Product.query.filter_by(farmer_id=user_id).all()
+    products = Product.query.filter_by(farmer_id=user_id, is_deleted=False).all()
     res = []
     for p in products:
         res.append({
@@ -197,7 +197,7 @@ def get_nearby_products():
     if lat is None or lng is None:
         return jsonify({"msg": "lat and lng required"}), 400
         
-    all_products = Product.query.filter_by(is_available=True).all()
+    all_products = Product.query.filter_by(is_available=True, is_deleted=False).all()
     results = []
     
     for p in all_products:
@@ -330,9 +330,16 @@ def delete_product(product_id, current_user):
         log_audit_event(current_user.id, "Permission Denied", f"Tried to delete product {product_id} belonging to farmer {product.farmer_id}")
         return jsonify({"msg": "Unauthorized. You do not own this product listing."}), 403
 
-    db.session.delete(product)
-    db.session.commit()
+    from models import Order
+    has_orders = Order.query.filter_by(product_id=product.id).first() is not None
+    if has_orders:
+        product.is_deleted = True
+        product.is_available = False
+        log_audit_event(current_user.id, "Product Soft Deleted", f"Soft deleted product {product.id} ({product.name}) because it has associated orders.")
+    else:
+        db.session.delete(product)
+        log_audit_event(current_user.id, "Product Hard Deleted", f"Hard deleted product {product.id} ({product.name})")
     
-    log_audit_event(current_user.id, "Product Deleted", f"Deleted product {product.id} ({product.name})")
+    db.session.commit()
     
     return jsonify({"msg": "Product deleted successfully"}), 200
