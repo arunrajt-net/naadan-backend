@@ -261,6 +261,7 @@ def get_nearby_products():
                     "farmer_community_doc_status": farmer.community_doc_status or "NONE",
                     "available_stock": p.available_stock,
                     "unit": p.unit,
+                    "farmer_payment_methods": farmer.payment_methods
                 })
                 
     # Sort by distance

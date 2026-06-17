@@ -62,7 +62,7 @@ def get_dashboard_stats(current_user):
     active_products = Product.query.filter_by(is_available=True).count()
 
     total_orders = Order.query.count()
-    pending_orders = Order.query.filter(Order.status.in_(['Pending Payment', 'Accepted', 'Packed', 'Out For Delivery'])).count()
+    pending_orders = Order.query.filter(Order.status.in_(['Pending Payment', 'Accepted', 'Packed', 'Out For Delivery', 'COD_PENDING', 'COD_ACCEPTED'])).count()
     completed_orders = Order.query.filter(Order.status.in_(['Completed', 'COMPLETED'])).count()
 
     # Recent Activity:

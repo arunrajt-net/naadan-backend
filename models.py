@@ -31,6 +31,7 @@ class User(db.Model):
     gps_accuracy = db.Column(db.Float, nullable=True)
     location_last_updated = db.Column(db.DateTime, nullable=True)
     pickup_landmark = db.Column(db.String(150), nullable=True)
+    payment_methods = db.Column(db.String(20), default=None, nullable=True)
 
     # ---- OLD FIELDS (kept for backward compat) ----
     is_verified = db.Column(db.Boolean, default=False)
@@ -142,6 +143,7 @@ class User(db.Model):
             "is_admin": self.is_admin,
             "gps_accuracy": self.gps_accuracy,
             "pickup_landmark": self.pickup_landmark,
+            "payment_methods": self.payment_methods
         }
 
 class Product(db.Model):

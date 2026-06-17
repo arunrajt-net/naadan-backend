@@ -46,12 +46,18 @@ def notify_status_change(order, status):
     if status == 'Pending Payment':
         create_notification(buyer_id, 'info', f"Your order #{order.id} has been placed successfully. Please complete payment.", order.id)
         create_notification(farmer_id, 'info', f"New order #{order.id} received for {pname}.", order.id)
+    elif status == 'COD_PENDING':
+        create_notification(buyer_id, 'info', f"Your COD order #{order.id} has been placed. Waiting for farmer review.", order.id)
+        create_notification(farmer_id, 'warning', f"New Cash on Delivery order #{order.id} received. Please review.", order.id)
     elif status == 'Waiting Farmer Confirmation':
         create_notification(buyer_id, 'info', f"Payment sent! Waiting for farmer to confirm order #{order.id}.", order.id)
         create_notification(farmer_id, 'warning', f"Payment submitted for order #{order.id}. Please confirm verification.", order.id)
     elif status == 'Accepted':
         create_notification(buyer_id, 'success', f"Farmer accepted your order #{order.id}! It is being prepared.", order.id)
         create_notification(farmer_id, 'success', f"You have accepted order #{order.id}.", order.id)
+    elif status == 'COD_ACCEPTED':
+        create_notification(buyer_id, 'success', f"✅ Your Cash on Delivery order has been accepted. The farmer is preparing your order. Please keep the payment ready during pickup or delivery.", order.id)
+        create_notification(farmer_id, 'success', f"You have accepted COD order #{order.id}.", order.id)
     elif status == 'Packed':
         create_notification(buyer_id, 'info', f"Your order #{order.id} has been packed.", order.id)
         create_notification(farmer_id, 'info', f"Order #{order.id} marked as Packed.", order.id)
@@ -67,17 +73,50 @@ def notify_status_change(order, status):
             create_notification(buyer_id, 'success', msg, order.id)
             create_notification(farmer_id, 'success', msg, order.id)
         else:
-            create_notification(buyer_id, 'success', f"You confirmed receipt of order #{order.id}.", order.id)
-            create_notification(farmer_id, 'success', f"Customer confirmed delivery of order #{order.id}! Order completed.", order.id)
+            if order.payment_method == 'COD':
+                create_notification(buyer_id, 'success', f"Your COD order #{order.id} is completed. Thank you!", order.id)
+                create_notification(farmer_id, 'success', f"COD Order #{order.id} completed. Payment collected.", order.id)
+            else:
+                create_notification(buyer_id, 'success', f"You confirmed receipt of order #{order.id}.", order.id)
+                create_notification(farmer_id, 'success', f"Customer confirmed delivery of order #{order.id}! Order completed.", order.id)
     elif status == 'Rejected':
         create_notification(buyer_id, 'error', f"Your order #{order.id} was rejected by the farmer.", order.id)
         create_notification(farmer_id, 'error', f"You have rejected order #{order.id}.", order.id)
+    elif status == 'COD_REJECTED':
+        create_notification(buyer_id, 'error', f"Your COD order #{order.id} was rejected by the farmer.", order.id)
+        create_notification(farmer_id, 'error', f"You have rejected COD order #{order.id}.", order.id)
+    elif status == 'COD_EXPIRED':
+        create_notification(buyer_id, 'error', f"Your COD order #{order.id} expired because the farmer did not respond within 24 hours.", order.id)
+        create_notification(farmer_id, 'error', f"COD Order #{order.id} expired because you did not respond within 24 hours.", order.id)
     elif status == 'Cancelled':
         create_notification(buyer_id, 'error', f"You cancelled order #{order.id}.", order.id)
         create_notification(farmer_id, 'error', f"Customer cancelled order #{order.id}.", order.id)
     elif status == 'Disputed':
         create_notification(buyer_id, 'error', f"You reported an issue for order #{order.id}. Order is now Disputed.", order.id)
         create_notification(farmer_id, 'error', f"Customer reported an issue for order #{order.id}. Order is now Disputed.", order.id)
+
+def expire_old_cod_orders():
+    try:
+        cutoff = datetime.utcnow() - timedelta(hours=24)
+        expired_cod_orders = Order.query.filter(
+            Order.status == 'COD_PENDING',
+            Order.created_at <= cutoff
+        ).all()
+        for order in expired_cod_orders:
+            product = Product.query.get(order.product_id)
+            if product:
+                product.reserved_quantity = max(0.0, (product.reserved_quantity or 0.0) - order.quantity_ordered)
+            order.status = 'COD_EXPIRED'
+            order.completion_reason = 'COD order expired due to farmer inactivity (24-hour timeout).'
+            db.session.commit()
+            log_audit_event(
+                order.buyer_id,
+                "Order Expired",
+                f"COD Order {order.id} for product '{product.name if product else order.product_id}' expired due to farmer inactivity."
+            )
+            notify_status_change(order, 'COD_EXPIRED')
+    except Exception as e:
+        print(f"Error in expire_old_cod_orders: {e}")
 
 def expire_abandoned_reservations():
     try:
@@ -193,7 +232,7 @@ def create_order(current_user):
 
         total_price = product.price * qty
 
-        initial_status = 'Waiting Farmer Confirmation' if payment_method == 'COD' else 'Pending Payment'
+        initial_status = 'COD_PENDING' if payment_method == 'COD' else 'Pending Payment'
         payment_status = 'COD' if payment_method == 'COD' else 'PENDING_PAYMENT'
 
         new_order = Order(
@@ -343,41 +382,62 @@ def update_order_status(order_id, current_user):
 
     if current_user.id == order.farmer_id:
         # Farmer transitions
-        if new_status not in ['Accepted', 'Packed', 'Out For Delivery', 'Waiting Customer Confirmation', 'Rejected']:
-            return jsonify({"msg": "Farmer is not allowed to set this status"}), 400
-        if new_status == 'Rejected' and old_status != 'Waiting Farmer Confirmation':
-            return jsonify({"msg": "Farmers can only reject orders waiting for confirmation"}), 400
-        if new_status == 'Accepted' and old_status != 'Waiting Farmer Confirmation':
-            return jsonify({"msg": "Cannot transition to Accepted from this status"}), 400
-        if new_status == 'Packed' and old_status != 'Accepted':
-            return jsonify({"msg": "Cannot transition to Packed from this status"}), 400
-        if new_status == 'Out For Delivery' and old_status != 'Packed':
-            return jsonify({"msg": "Cannot transition to Out For Delivery from this status"}), 400
-        if new_status == 'Waiting Customer Confirmation' and old_status != 'Out For Delivery':
-            return jsonify({"msg": "Cannot transition to Waiting Customer Confirmation from this status"}), 400
+        if order.payment_method == 'COD':
+            if new_status not in ['COD_ACCEPTED', 'COD_REJECTED', 'Completed']:
+                return jsonify({"msg": "Farmer is not allowed to set this status for COD order"}), 400
+            if new_status == 'COD_ACCEPTED' and old_status != 'COD_PENDING':
+                return jsonify({"msg": "Can only accept pending COD orders"}), 400
+            if new_status == 'COD_REJECTED' and old_status != 'COD_PENDING':
+                return jsonify({"msg": "Can only reject pending COD orders"}), 400
+            if new_status == 'Completed' and old_status != 'COD_ACCEPTED':
+                return jsonify({"msg": "Can only mark accepted COD orders as completed"}), 400
+        else:
+            if new_status not in ['Accepted', 'Packed', 'Out For Delivery', 'Waiting Customer Confirmation', 'Rejected']:
+                return jsonify({"msg": "Farmer is not allowed to set this status"}), 400
+            if new_status == 'Rejected' and old_status != 'Waiting Farmer Confirmation':
+                return jsonify({"msg": "Farmers can only reject orders waiting for confirmation"}), 400
+            if new_status == 'Accepted' and old_status != 'Waiting Farmer Confirmation':
+                return jsonify({"msg": "Cannot transition to Accepted from this status"}), 400
+            if new_status == 'Packed' and old_status != 'Accepted':
+                return jsonify({"msg": "Cannot transition to Packed from this status"}), 400
+            if new_status == 'Out For Delivery' and old_status != 'Packed':
+                return jsonify({"msg": "Cannot transition to Out For Delivery from this status"}), 400
+            if new_status == 'Waiting Customer Confirmation' and old_status != 'Out For Delivery':
+                return jsonify({"msg": "Cannot transition to Waiting Customer Confirmation from this status"}), 400
 
     elif current_user.id == order.buyer_id:
         # Buyer transitions
-        if new_status not in ['Cancelled', 'Completed', 'Disputed']:
-            return jsonify({"msg": "Buyers can only set Cancelled, Completed, or Disputed"}), 400
-        if new_status == 'Cancelled' and old_status not in ['Pending Payment', 'Waiting Farmer Confirmation']:
-            return jsonify({"msg": "Cannot cancel order after confirmation"}), 400
-        if new_status == 'Completed' and old_status not in ['Out For Delivery', 'Waiting Customer Confirmation']:
-            return jsonify({"msg": "Cannot confirm delivery from this status"}), 400
-        if new_status == 'Disputed' and old_status not in ['Out For Delivery', 'Waiting Customer Confirmation']:
-            return jsonify({"msg": "Cannot dispute order from this status"}), 400
+        if order.payment_method == 'COD':
+            if new_status not in ['Cancelled']:
+                return jsonify({"msg": "Buyer is not allowed to set this status for COD order"}), 400
+            if new_status == 'Cancelled' and old_status != 'COD_PENDING':
+                return jsonify({"msg": "Cannot cancel COD order after farmer accepted it"}), 400
+        else:
+            if new_status not in ['Cancelled', 'Completed', 'Disputed']:
+                return jsonify({"msg": "Buyers can only set Cancelled, Completed, or Disputed"}), 400
+            if new_status == 'Cancelled' and old_status not in ['Pending Payment', 'Waiting Farmer Confirmation']:
+                return jsonify({"msg": "Cannot cancel order after confirmation"}), 400
+            if new_status == 'Completed' and old_status not in ['Out For Delivery', 'Waiting Customer Confirmation']:
+                return jsonify({"msg": "Cannot confirm delivery from this status"}), 400
+            if new_status == 'Disputed' and old_status not in ['Out For Delivery', 'Waiting Customer Confirmation']:
+                return jsonify({"msg": "Cannot dispute order from this status"}), 400
 
     product = Product.query.get(order.product_id)
     
     # Handle stock reservation release or final deduction
-    if new_status in ['Rejected', 'Cancelled']:
+    if new_status in ['Rejected', 'Cancelled', 'COD_REJECTED', 'COD_EXPIRED']:
         if product:
             product.reserved_quantity = max(0.0, (product.reserved_quantity or 0.0) - order.quantity_ordered)
             
     elif new_status == 'Completed':
         order.completed_at = datetime.utcnow()
-        order.completed_by = 'customer'
-        order.completion_reason = 'Confirmed by customer'
+        if order.payment_method == 'COD':
+            order.completed_by = 'farmer'
+            order.completion_reason = 'Payment collected in cash by farmer'
+            order.payment_status = 'PAYMENT_CONFIRMED'
+        else:
+            order.completed_by = 'customer'
+            order.completion_reason = 'Confirmed by customer'
         
         if product:
             val, unit = product.parse_quantity_str()
@@ -412,6 +472,7 @@ def update_order_status(order_id, current_user):
 @orders_bp.route('/<int:order_id>', methods=['GET'])
 @firebase_required()
 def get_order_detail(order_id, current_user):
+    expire_old_cod_orders()
     order = Order.query.get(order_id)
     if not order:
         return jsonify({"msg": "Order not found"}), 404
@@ -489,6 +550,7 @@ def get_farmer_orders(current_user):
     if not current_user.is_farmer:
         return jsonify({"msg": "Forbidden. Farmer capability required."}), 403
         
+    expire_old_cod_orders()
     expire_abandoned_reservations()
     auto_complete_delivered_orders()
     
@@ -527,6 +589,7 @@ def get_buyer_orders(current_user):
     if not current_user.is_buyer:
         return jsonify({"msg": "Forbidden. Buyer capability required."}), 403
 
+    expire_old_cod_orders()
     expire_abandoned_reservations()
     auto_complete_delivered_orders()
 

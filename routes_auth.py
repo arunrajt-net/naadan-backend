@@ -72,7 +72,8 @@ def user_to_dict(user):
         "is_admin": bool(user.is_admin),
         "location_privacy": user.location_privacy or "public",
         "pickup_instructions": user.pickup_instructions,
-        "pickup_landmark": user.pickup_landmark
+        "pickup_landmark": user.pickup_landmark,
+        "payment_methods": user.payment_methods
     }
 
 def log_audit_event(user_id, action, details):
@@ -272,12 +273,48 @@ def sync_user():
 
             user.delivery_available = deliv_avail
             user.delivery_price_per_km = deliv_price
-            if 'upi_id' in data and data.get('upi_id'):
-                upi_val = data.get('upi_id').strip()
-                import re
-                if upi_val and not re.match(r'^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$', upi_val):
-                    return jsonify({"error": "Invalid UPI ID format. It should follow the format: username@bank"}), 400
-                user.upi_id = upi_val
+
+            # Payment methods update with active orders check
+            if 'payment_methods' in data and data.get('payment_methods') != user.payment_methods:
+                new_pm = data.get('payment_methods')
+                if new_pm not in ['UPI_ONLY', 'COD_ONLY', 'BOTH', None, '']:
+                    return jsonify({"error": "Invalid payment_methods value. Must be UPI_ONLY, COD_ONLY, or BOTH."}), 400
+                
+                # Check active orders
+                from models import Order
+                active_order_statuses = [
+                    'Pending Payment', 'Pending', 'PENDING',
+                    'Waiting Farmer Confirmation',
+                    'Accepted', 'Packed', 'Out For Delivery', 'Waiting Customer Confirmation',
+                    'COD_PENDING', 'COD_ACCEPTED', 'Disputed'
+                ]
+                active_orders_count = Order.query.filter(
+                    Order.farmer_id == user.id,
+                    Order.status.in_(active_order_statuses)
+                ).count()
+                if active_orders_count > 0:
+                    return jsonify({"error": "You cannot change payment methods while active orders are in progress."}), 400
+                
+                user.payment_methods = new_pm if new_pm else None
+
+            # UPI ID Validation
+            if 'upi_id' in data:
+                upi_val = data.get('upi_id')
+                if upi_val:
+                    upi_val = upi_val.strip()
+                if not upi_val:
+                    user.upi_id = None
+                else:
+                    import re
+                    if not re.match(r'^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$', upi_val):
+                        return jsonify({"error": "Invalid UPI ID format. It should follow the format: username@bank"}), 400
+                    user.upi_id = upi_val
+
+            # Validate that if UPI_ONLY or BOTH is selected, a valid UPI ID exists
+            target_pm = user.payment_methods
+            if target_pm in ['UPI_ONLY', 'BOTH'] and not user.upi_id:
+                return jsonify({"error": "UPI payment is enabled. Please configure a valid UPI ID before listing products."}), 400
+
             if 'farm_name' in data and data.get('farm_name'):
                 user.farm_name = data.get('farm_name').strip()
             if 'location_privacy' in data:
@@ -357,7 +394,8 @@ def sync_user():
                 is_admin=is_a,
                 location_privacy=data.get('location_privacy', 'public'),
                 pickup_instructions=data.get('pickup_instructions'),
-                phone_verified=phone_verified_val
+                phone_verified=phone_verified_val,
+                payment_methods=None
             )
             db.session.add(new_user)
             db.session.commit()
